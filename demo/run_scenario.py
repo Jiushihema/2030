@@ -214,13 +214,13 @@ def run() -> None:
 
     line_monitor      = LineMonitorDevice("line_monitor", bus=bus)
     monitor_host      = MonitorHostDevice("monitor_host", bus=bus)
+    operator_station = OperatorStationDevice("operator_station", bus=bus)
     data_server       = DataServerDevice("data_server", bus=bus)
 
     # breaker_it 必须先于 line_mu 实例化
-    breaker_it        = BreakerIntelligentTerminal(bus=bus, topo=topo)
+    breaker_it        = BreakerIntelligentTerminal(bus=bus, topo=topo, report_interval=1)
     mechanical_sensor = MechanicalSensor(bus=bus, topo=topo, initial_position="closed")
-    line_mu           = LineMergingUnit(bus=bus, topo=topo, breaker_ref=breaker_it)
-    operator_station = OperatorStationDevice("operator_station", bus=bus)
+    line_mu           = LineMergingUnit(bus=bus, topo=topo, breaker_ref=breaker_it, report_interval=1)
 
     for dev_id in ("line_protect", "transformer_mu", "transformer_monitor",
                    "transformer_protect", "transformer_it", "transformer_status"):
@@ -253,10 +253,10 @@ def run() -> None:
     # ── 主循环 ──
     prev_breaker_state = breaker_it.breaker_state
     tick = 0
-    SUMMARY_TICKS = 50
+    SUMMARY_TICKS = 1
 
     while not _stop_event.is_set():
-        time.sleep(0.1)
+        time.sleep(1)
         tick += 1
 
         breaker_now = breaker_it.breaker_state
