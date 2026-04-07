@@ -29,6 +29,7 @@ from devices.process.line_mu import LineMergingUnit
 from devices.bay.line_monitor import LineMonitorDevice
 from devices.station.monitor_host import MonitorHostDevice
 from devices.station.data_server import DataServerDevice
+from devices.station.operator_station import OperatorStationDevice
 
 CONSOLE_HOST = "localhost"
 CONSOLE_PORT = 9999
@@ -96,6 +97,7 @@ class SimContext:
     data_server:       DataServerDevice
     line_monitor:      LineMonitorDevice
     bus:               MessageBus
+    operator_station:  OperatorStationDevice
 
 
 def _get_total(data_server: DataServerDevice) -> int:
@@ -124,6 +126,14 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
         topo.remove_link("line_monitor", "monitor_host")
         logger.warning("通信干扰成功。【间隔层-站控层】通信链路已在物理层瘫痪")
 
+    elif cmd == "4":
+        ctx.operator_station.send_manual_command("line_monitor", "breaker_it", "close")
+        logger.warning("人工合闸")
+
+    elif cmd == "5":
+        ctx.operator_station.send_manual_command("line_monitor", "breaker_it", "trip")
+        logger.warning("人工分闸")
+
 
     elif cmd == "r":
         ctx.mechanical_sensor._spring_charged = True
@@ -131,6 +141,7 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
         ctx.line_monitor._reclose_armed = False
         if ctx.line_monitor._reclose_timer is not None:
             ctx.line_monitor._reclose_timer.cancel()
+        topo.add_link("line_monitor", "monitor_host")
         logger.warning("所有状态已重置")
 
     elif cmd == "s":
@@ -209,6 +220,7 @@ def run() -> None:
     breaker_it        = BreakerIntelligentTerminal(bus=bus, topo=topo)
     mechanical_sensor = MechanicalSensor(bus=bus, topo=topo, initial_position="closed")
     line_mu           = LineMergingUnit(bus=bus, topo=topo, breaker_ref=breaker_it)
+    operator_station = OperatorStationDevice("operator_station", bus=bus)
 
     for dev_id in ("line_protect", "transformer_mu", "transformer_monitor",
                    "transformer_protect", "transformer_it", "transformer_status"):
@@ -225,6 +237,7 @@ def run() -> None:
         data_server=data_server,
         line_monitor=line_monitor,
         bus=bus,
+        operator_station=operator_station,
     )
 
     logger.info("电站全链路仿真演示启动（并行运行模式）")
