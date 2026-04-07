@@ -1,0 +1,88 @@
+"""
+demo/attack_console.py
+
+攻击注入控制台 —— 独立窗口运行
+
+使用:
+  python demo/attack_console.py
+"""
+
+import socket
+import argparse
+import os
+
+os.system("")  # 激活 Windows ANSI 支持
+
+YELLOW = "\033[33m"
+GREEN  = "\033[32m"
+RED    = "\033[31m"
+RESET  = "\033[0m"
+
+MENU = f"""
+{YELLOW}========== 攻击注入控制台 =========={RESET}
+  {RED}[1]{RESET} 注入过压帧              (触发保护跳闸 → 自动重合)
+  {RED}[2]{RESET} 篡改传感器位置为 open   (trip 指令被拒 → 线路持续带故障)
+  {RED}[3]{RESET} 通信干扰
+  {GREEN}[r]{RESET} 重置所有状态
+  {GREEN}[s]{RESET} 查看当前状态
+  {YELLOW}[q]{RESET} 退出仿真
+{YELLOW}====================================={RESET}
+"""
+
+CMD_HINTS = {
+    "1": "注入过压帧",
+    "2": "篡改传感器位置为 open",
+    "3": "报警阻断",
+    "r": "重置所有状态",
+    "s": "查看当前状态",
+    "q": "退出仿真",
+}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="攻击注入控制台")
+    parser.add_argument("--host", default="localhost")
+    parser.add_argument("--port", type=int, default=9999)
+    args = parser.parse_args()
+
+    print(f"连接仿真主进程 {args.host}:{args.port} ...")
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.connect((args.host, args.port))
+        except ConnectionRefusedError:
+            print(f"{RED}连接失败，请先启动仿真主进程{RESET}")
+            return
+
+        print(f"{GREEN}连接成功！{RESET}")
+        print(MENU)
+
+        while True:
+            try:
+                cmd = input(">>> ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\n已退出控制台")
+                break
+
+            if not cmd:
+                continue
+
+            if cmd not in CMD_HINTS:
+                print(f"{RED}未知指令: {cmd}{RESET}  可用: {list(CMD_HINTS.keys())}")
+                continue
+
+            print(f"  → {CMD_HINTS[cmd]}")
+
+            try:
+                s.sendall(cmd.encode())
+            except (BrokenPipeError, OSError):
+                print(f"{RED}仿真主进程已断开{RESET}")
+                break
+
+            if cmd == "q":
+                print("已发送退出指令")
+                break
+
+
+if __name__ == "__main__":
+    main()
