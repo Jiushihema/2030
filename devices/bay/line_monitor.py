@@ -21,7 +21,7 @@ class LineMonitorDevice(BaseBayDevice):
 
         self._reclose_timer:         threading.Timer = None
         self._last_voltage:          float = 0.0
-        self._last_breaker_position: str   = "unknown"
+        self._last_breaker_position: str   = "close"
         self._reclose_armed:         bool  = False
 
     # ════════════════════════════════════════════

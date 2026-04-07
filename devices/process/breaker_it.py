@@ -36,7 +36,7 @@ class BreakerIntelligentTerminal(BaseProcessAggregator):
             topo=topo,
         )
 
-        self._breaker_state:      str   = "unknown"
+        self._breaker_state:      str   = "close"
         self._last_cmd_time:      Optional[float] = None
         self._last_cmd_action:    Optional[str]   = None
         # self._cmd_cooldown_until: float = 0.0
@@ -89,7 +89,7 @@ class BreakerIntelligentTerminal(BaseProcessAggregator):
         return {
             "device_id":       self.device_id,
             "breaker_state":   self._breaker_state,
-            "position":        mech_value.get("position", "unknown"),
+            "position":        mech_value.get("position", "close"),
             "operation_count": mech_value.get("operation_count", 0),
             "travel_time_ms":  mech_value.get("travel_time_ms", 0.0),
             "spring_charged":  mech_value.get("spring_charged", None),
@@ -146,7 +146,7 @@ class BreakerIntelligentTerminal(BaseProcessAggregator):
 
         # 查传感器缓存位置
         mech_data       = self._latest_cache.get("mechanical_sensor", {})
-        sensor_position = mech_data.get("value", {}).get("position", "unknown")
+        sensor_position = mech_data.get("value", {}).get("position", "close")
 
         if sensor_position == "open":
             # 传感器显示已分闸（可能被篡改），拒绝执行，线路持续带故障
