@@ -115,17 +115,10 @@ _OVERVOLTAGE_PAYLOAD = {"voltage": 25.0, "current": 200.0}
 
 
 def _dispatch(cmd: str, ctx: SimContext) -> None:
-    if cmd == "1-1":
-        ctx.line_mu.clear_continuous_inject()
-        ctx.line_mu.inject_frame(dict(_OVERVOLTAGE_PAYLOAD))
-        logger.warning(
-            "【1-1】常规电网波动下注入单次过压帧 → 测控过压切除 → 重合闸条件满足后可恢复"
-        )
-
-    elif cmd == "1-2":
+    if cmd == "1":
         ctx.line_mu.set_continuous_inject(_OVERVOLTAGE_PAYLOAD)
         logger.warning(
-            "【1-2】合闸时持续过压帧；分闸后注入不生效，SV 为失电数据"
+            "【1】合闸时持续过压帧；分闸后注入不生效，SV 为失电数据"
         )
 
     elif cmd == "2":
@@ -174,6 +167,9 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
         ctx.line_monitor._protection_locked = False
         ctx.line_monitor._auto_reclose_enabled = True
         ctx.line_monitor._overvoltage_trip_count = 0
+        ctx.line_monitor._voltage_window.clear()
+        ctx.line_monitor._overvoltage_persistent_ticks = 0
+        ctx.line_monitor._last_window_stat = None
         if ctx.breaker_it.breaker_state != "closed":
             ctx.breaker_it.execute_command({"action": "close"})
         logger.warning("所有状态已重置")
