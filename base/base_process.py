@@ -242,7 +242,7 @@ class BaseProcessAggregator(BaseDevice):
         ----------
         msg : Message  payload 格式: {"sync_time": float}
         """
-        ts = (msg.payload.get("sync_time")
+        ts = (msg.payload.get("timestamp")
               if isinstance(msg.payload, dict) else None)
         if ts is None:
             self.logger.warning(f"时间同步载荷格式异常: {msg.payload}")
@@ -251,6 +251,7 @@ class BaseProcessAggregator(BaseDevice):
         # 更新自身时钟
         self.sync_time(ts)
         self.logger.info(f"时间同步 from [{msg.sender_id}]: {ts}")
+        # self.logger.critical(f"时间同步 from [{msg.sender_id}]: {ts}")
 
         # 级联转发给所有下属传感器
         for sensor_id in self._downstream_ids:

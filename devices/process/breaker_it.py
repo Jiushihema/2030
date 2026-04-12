@@ -196,8 +196,19 @@ class BreakerIntelligentTerminal(BaseProcessAggregator):
     # ════════════════════════════════════════════
 
     def should_accept_command(self, msg: Message) -> bool:
-        if msg.sender_id in self._upstream_ids:
-            return True
-        if msg.app_protocol == AppProtocol.GOOSE:
-            return True
-        return False
+        is_valid_source = (msg.sender_id in self._upstream_ids) or (msg.app_protocol == AppProtocol.GOOSE)
+        if not is_valid_source:
+            return False
+
+        local_time = self.current_time
+        cmd_time = msg.payload.get("cmd_time", msg.timestamp) if isinstance(msg.payload, dict) else msg.timestamp
+
+        time_diff = local_time - cmd_time
+        if abs(time_diff) > 1.5:
+            self.logger.critical(
+                f"【安全拦截】拒绝执行控制指令！报文时间与本地时钟偏差过大 ({time_diff:.2f}秒)。"
+            )
+            # 拒绝接收该指令，后续的 execute_command 将不会被调用
+            return False
+
+        return True

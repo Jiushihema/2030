@@ -115,6 +115,13 @@ class BaseBayDevice(BaseDevice):
           4. 以上都不匹配            → 记录 warning 日志
         """
 
+        extracted_time = msg.timestamp
+
+        # 更新本地时间
+        if self.current_time != extracted_time:
+            self.current_time = extracted_time
+            self.logger.debug(f"[{self.device_name}]时钟已跟随报文 [{msg.sender_id}] 同步至: {self.current_time}")
+
         # ── 按来源分发 ──
         sender = msg.sender_id
 
@@ -249,6 +256,8 @@ class BaseBayDevice(BaseDevice):
         -------
         bool  投递是否成功
         """
+        current_ts = self.current_time
+
         msg = Message(
             sender_id=self.device_id,
             receiver_id=receiver_id,
@@ -256,6 +265,7 @@ class BaseBayDevice(BaseDevice):
             app_protocol=app_protocol,
             transport_medium=transport_medium,
             payload=payload,
+            timestamp=current_ts,
         )
         return self.send(msg)
 
@@ -295,6 +305,8 @@ class BaseBayDevice(BaseDevice):
           - 介质: 有线传输
           - 类型: CMD
         """
+        current_ts = self.current_time
+
         msg = Message(
             sender_id=self.device_id,
             receiver_id=receiver_id,
@@ -302,6 +314,7 @@ class BaseBayDevice(BaseDevice):
             app_protocol=app_protocol,
             transport_medium=transport_medium,
             payload=payload,
+            timestamp=current_ts,
         )
         return self.send(msg)
 
@@ -327,6 +340,8 @@ class BaseBayDevice(BaseDevice):
           - 协议: Modbus-TCP
           - 介质: 无线 Mesh
         """
+        current_ts = self.current_time
+
         msg = Message(
             sender_id=self.device_id,
             receiver_id=receiver_id,
@@ -334,6 +349,7 @@ class BaseBayDevice(BaseDevice):
             app_protocol=app_protocol,
             transport_medium=transport_medium,
             payload=payload,
+            timestamp=current_ts,
         )
         return self.send(msg)
 

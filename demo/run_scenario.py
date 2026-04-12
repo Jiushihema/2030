@@ -30,6 +30,7 @@ from devices.bay.line_monitor import LineMonitorDevice
 from devices.station.monitor_host import MonitorHostDevice
 from devices.station.data_server import DataServerDevice
 from devices.station.operator_station import OperatorStationDevice
+from devices.station.time_sync import TimeSyncDevice
 
 CONSOLE_HOST = "localhost"
 CONSOLE_PORT = 9999
@@ -98,6 +99,7 @@ class SimContext:
     line_monitor:      LineMonitorDevice
     bus:               MessageBus
     operator_station:  OperatorStationDevice
+    is_time_spoofing: bool = False
 
 
 def _get_total(data_server: DataServerDevice) -> int:
@@ -122,9 +124,14 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
             "已篡改传感器位置为 open，trip 指令将被拒绝，线路持续带故障！"
         )
     
-    elif cmd == "3":
+    elif cmd == "3-1":
         topo.remove_link("line_monitor", "monitor_host")
         logger.warning("通信干扰成功。【间隔层-站控层】通信链路已在物理层瘫痪")
+
+    elif cmd == "3-2":
+        topo.remove_link("line_monitor", "breaker_it")
+        # topo.remove_link("line_monitor", "line_mu")
+        logger.warning("通信干扰成功。【过程层-间隔层】通信链路已在物理层瘫痪")
 
     elif cmd == "4":
         ctx.operator_station.send_manual_command("line_monitor", "breaker_it", "close")
@@ -134,6 +141,11 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
         ctx.operator_station.send_manual_command("line_monitor", "breaker_it", "trip")
         logger.warning("人工分闸")
 
+    elif cmd == "6":
+        topo.remove_link("time_sync", "breaker_it")
+        topo.add_link("fake_time_sync", "breaker_it")
+        ctx.is_time_spoofing = True
+        logger.warning("授时欺骗")
 
     elif cmd == "r":
         ctx.mechanical_sensor._spring_charged = True
@@ -142,6 +154,10 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
         if ctx.line_monitor._reclose_timer is not None:
             ctx.line_monitor._reclose_timer.cancel()
         topo.add_link("line_monitor", "monitor_host")
+        topo.add_link("line_monitor", "breaker_it")
+        ctx.is_time_spoofing = False
+        topo.add_link("time_sync", "breaker_it")
+        topo.remove_link("fake_time_sync", "breaker_it")
         logger.warning("所有状态已重置")
 
     elif cmd == "s":
@@ -216,6 +232,8 @@ def run() -> None:
     monitor_host      = MonitorHostDevice("monitor_host", bus=bus)
     operator_station = OperatorStationDevice("operator_station", bus=bus)
     data_server       = DataServerDevice("data_server", bus=bus)
+    time_sync = TimeSyncDevice("time_sync", bus=bus)
+    fake_time_sync = TimeSyncDevice("fake_time_sync", bus=bus)
 
     # breaker_it 必须先于 line_mu 实例化
     breaker_it        = BreakerIntelligentTerminal(bus=bus, topo=topo, report_interval=1)
@@ -223,8 +241,11 @@ def run() -> None:
     line_mu           = LineMergingUnit(bus=bus, topo=topo, breaker_ref=breaker_it, report_interval=1)
 
     for dev_id in ("line_protect", "transformer_mu", "transformer_monitor",
-                   "transformer_protect", "transformer_it", "transformer_status"):
+                   "transformer_protect", "transformer_it", "transformer_status", "fake_time_sync"):
         bus.register(dev_id, lambda m: None)
+
+    logger.info("初始化时间戳")
+    time_sync.broadcast_time_sync()
 
     # ── 启动设备线程 ──
     mechanical_sensor.start()
@@ -258,6 +279,11 @@ def run() -> None:
     while not _stop_event.is_set():
         time.sleep(1)
         tick += 1
+
+        time_sync.broadcast_time_sync()
+
+        if ctx.is_time_spoofing:
+            fake_time_sync.time_sync_to_process("breaker_it", time.time() + 100)
 
         breaker_now = breaker_it.breaker_state
         if breaker_now != prev_breaker_state:

@@ -11,6 +11,16 @@ class MonitorHostDevice(BaseStationDevice):
 		"""
 		仅做数据展示与存储同步，不干预业务逻辑
 		"""
+		local_time = self.current_time
+		event_time = msg.timestamp
+
+		# 如果时间差大于 2 秒，说明全站时钟可能遭到了欺骗或漂移
+		if abs(local_time - event_time) > 2.0:
+			self.logger.critical(
+				f"【安全告警】检测到严重的时钟失步！"
+				f"本地时间:{local_time:.2f}, 事件时间:{event_time:.2f} (来源:{msg.sender_id})"
+			)
+
 		if msg.msg_type == MsgType.PROTECTION:
 			self.logger.error(f"【展示】收到间隔层保护动作事件: {msg.payload}")
 		elif msg.msg_type == MsgType.ALARM:
@@ -31,12 +41,12 @@ class MonitorHostDevice(BaseStationDevice):
 		"""
 		# 接收操作员站发来的手动操作指令 (IEC 61850 MMS / WiFi6)
 		if msg.sender_id == "operator_station" and msg.msg_type == MsgType.CMD:
-			# target_bay_device = msg.payload.get("target_bay_device", "line_monitor")
 			target_bay_device = msg.payload.get("target_bay_device")
 			self.logger.info(f"收到操作员站手动指令，准备转发给间隔层设备 [{target_bay_device}]")
 			payload={
 				"action": msg.payload.get("action"),
-				"reason": msg.payload.get("source")
+				"reason": msg.payload.get("source"),
+				"cmd_time": self.current_time
 			}
 
 			# 将操作员的手动指令下发给对应的间隔层设备 (IEC 61850 MMS / 有线)

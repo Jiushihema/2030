@@ -3,7 +3,7 @@ from base.base_station_device import BaseStationDevice
 from common.message import MsgType, AppProtocol, TransportMedium
 
 
-class TimeSyncSystemDevice(BaseStationDevice):
+class TimeSyncDevice(BaseStationDevice):
     """
     无线授时系统 (站控层)
     对应拓扑节点: time_sync_system
@@ -19,11 +19,10 @@ class TimeSyncSystemDevice(BaseStationDevice):
         if current_time is None:
             current_time = time.time()
 
-        # 构造授时 Payload，根据架构图要求体现误差 ≤1ms 的高精度特性
+        # 构造授时 Payload
         payload = {
             "timestamp": current_time,
-            "precision": "≤1ms",
-            "source": "time_sync_system"
+            "source": "time_sync"
         }
 
         self.logger.info(f"【无线授时系统】发起全站时间同步，时间戳: {current_time}")
@@ -39,6 +38,43 @@ class TimeSyncSystemDevice(BaseStationDevice):
 
         # 2. 向同层设备（监控主机等）发送授时信号
         # 对应架构图: 时间同步（误差≤1ms）PTP/IEEE 1588 -> 无线射频
+        for peer_id in self.peer_ids:
+            self.send_to_peer(
+                receiver_id=peer_id,
+                payload=payload,
+                msg_type=MsgType.SYNC,
+                app_protocol=AppProtocol.PTP,
+                transport_medium=TransportMedium.RF_STANDARD
+            )
+
+    def time_sync_to_process(self, receiver_id: str, current_time: float = None) -> None:
+        if current_time is None:
+            current_time = time.time()
+
+        # 构造授时 Payload
+        payload = {
+            "timestamp": current_time,
+            "source": "time_sync"
+        }
+
+        self.send_to_process_layer(
+            receiver_id=receiver_id,
+            payload=payload,
+            msg_type=MsgType.SYNC,
+            app_protocol=AppProtocol.PTP,
+            transport_medium=TransportMedium.RF_STANDARD
+        )
+
+    def time_sync_to_station(self, current_time: float = None) -> None:
+        if current_time is None:
+            current_time = time.time()
+
+        # 构造授时 Payload
+        payload = {
+            "timestamp": current_time,
+            "source": "time_sync"
+        }
+
         for peer_id in self.peer_ids:
             self.send_to_peer(
                 receiver_id=peer_id,

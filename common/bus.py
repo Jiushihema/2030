@@ -99,11 +99,11 @@ class MessageBus:
             # 查询拓扑邻接表，看是否存在连通链路
             neighbors = topo._adjacency.get(msg.sender_id, set())
             if msg.receiver_id not in neighbors:
-                logger.critical(
-                    f"[BUS] 🚫 物理链路断开/信号丢失：无法跨越断开的信道 "
-                    f"从 [{msg.sender_id}] 传送到 [{msg.receiver_id}]！"
-                    f"(类型={msg.msg_type})"
-                )
+                # logger.critical(
+                #     f"[BUS] 🚫 物理链路断开/信号丢失：无法跨越断开的信道 "
+                #     f"从 [{msg.sender_id}] 传送到 [{msg.receiver_id}]！"
+                #     f"(类型={msg.msg_type})"
+                # )
                 # 链路不存在，模拟空中信号掩盖或网线被剪断，投递失败
                 return False
 

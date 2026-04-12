@@ -85,10 +85,12 @@ SUBSTATION_TOPOLOGY = {
         # === 站控层内部 ===
         ("operator_station",   "monitor_host"),
         ("time_sync",          "monitor_host"),
+        ("time_sync",          "operator_station"),
         ("monitor_host",       "data_server"),
 
         # === 站控层 → 过程层 (跨层授时) ===
         ("time_sync",          "transformer_mu"),
         ("time_sync",          "line_mu"),
+        ("time_sync",          "breaker_it"),
     ],
 }
