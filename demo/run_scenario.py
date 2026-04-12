@@ -118,7 +118,7 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
     if cmd == "1":
         ctx.line_mu.set_continuous_inject(_OVERVOLTAGE_PAYLOAD)
         logger.warning(
-            "【1】合闸时持续过压帧；分闸后注入不生效，SV 为失电数据"
+            "合闸时持续过压帧；分闸后注入不生效，SV 为失电数据"
         )
 
     elif cmd == "2":
@@ -152,8 +152,13 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
         ctx.is_time_spoofing = True
         logger.warning("授时欺骗")
 
+    elif cmd == "0":
+        ctx.line_mu.set_continuous_override(_OVERVOLTAGE_PAYLOAD)
+        logger.warning("电网过载异常")
+
     elif cmd == "r":
         ctx.line_mu.clear_continuous_inject()
+        ctx.line_mu.clear_continuous_override()
         ctx.mechanical_sensor._spring_charged = True
         ctx.mechanical_sensor.set_position("closed")
         ctx.line_monitor._reclose_armed = False
