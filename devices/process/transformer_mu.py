@@ -22,14 +22,15 @@ devices/process/transformer_mu.py
     5. 接收 PTP 时间同步并级联转发给下属传感器
 """
 
-import time
 import math
-from typing import Any, Dict, List, Optional
+import threading
+import time
+from typing import Any, Dict, Optional
 
 from base.base_process import BaseProcessAggregator
 from common.bus import MessageBus
 from common.message import Message, MsgType, AppProtocol, TransportMedium
-from common.topology import TopologyRegistry, global_topo
+from common.topology import TopologyRegistry
 
 
 class TransformerMergingUnit(BaseProcessAggregator):
@@ -88,6 +89,15 @@ class TransformerMergingUnit(BaseProcessAggregator):
         # ── 统计 ──
         self._total_sv_frames: int = 0
 
+        # ── 自驱动 SV 线程 (与 line_mu 一致, 按 report_interval 周期上报) ──
+        self._running: bool = False
+        self._thread: Optional[threading.Thread] = None
+        self._stop_event: Optional[threading.Event] = None
+        self._logged_empty_cache: bool = False
+
+        # 最近一帧完整 SV 载荷 (wrap_payload 之后), 供调试 / 演示读取
+        self.last_sample: Optional[Dict[str, Any]] = None
+
         self.logger.info(
             f"主变合并单元初始化完成 | svID={self._sv_id} "
             f"| SV帧率={1.0/self.report_interval:.0f}Hz "
@@ -113,6 +123,64 @@ class TransformerMergingUnit(BaseProcessAggregator):
     def quality_flags(self) -> Dict[str, str]:
         """数据质量标志"""
         return dict(self._quality_flags)
+
+    # ════════════════════════════════════════════
+    #  自驱动 SV 上报线程
+    # ════════════════════════════════════════════
+
+    def start(self, stop_event: threading.Event = None) -> None:
+        """启动周期性 SV 上报线程。"""
+        if self._running:
+            self.logger.warning("SV 上报线程已在运行，忽略重复启动")
+            return
+        self._stop_event = stop_event
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._loop,
+            name=f"{self.device_id}_sv_loop",
+            daemon=True,
+        )
+        self._thread.start()
+        self.logger.info(
+            f"主变合并单元 SV 线程已启动，间隔={self.report_interval}s "
+            f"({1.0 / self.report_interval:.0f}Hz)"
+        )
+
+    def stop(self) -> None:
+        """停止 SV 上报线程。"""
+        if not self._running:
+            return
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        self._thread = None
+        self.logger.info("主变合并单元 SV 线程已停止")
+
+    def _loop(self) -> None:
+        while self._running:
+            if self._stop_event is not None and self._stop_event.is_set():
+                break
+            self.periodic_report()
+            time.sleep(self.report_interval)
+
+    def report_to_upstream(self, payload: Dict[str, Any]) -> None:
+        """上报并缓存最近一帧 SV (wrap_payload 仅调用一次, 避免采样计数重复递增)。"""
+        wrapped = self.wrap_payload(payload)
+        self.last_sample = wrapped
+
+        for target_id in self._upstream_ids:
+            msg = Message(
+                sender_id=self.device_id,
+                receiver_id=target_id,
+                msg_type=self.report_msg_type,
+                app_protocol=self.app_protocol,
+                transport_medium=self.transport_medium,
+                payload=wrapped,
+                timestamp=self.current_time or time.time(),
+            )
+            success = self.send(msg)
+            if not success:
+                self.logger.warning(f"上报失败: [{target_id}] 不可达")
 
     # ════════════════════════════════════════════
     #  传感器数据处理 (BaseProcessAggregator 要求实现)
@@ -330,13 +398,33 @@ class TransformerMergingUnit(BaseProcessAggregator):
 
     def periodic_report(self) -> None:
         """
-        周期性 SV 帧上报
+        周期性 SV 帧上报 (4kHz 下禁止每帧 INFO, 仅每秒汇总一次)
 
-        在基类 periodic_report() 基础上, 每 4000 帧输出一次统计信息。
+        逻辑与基类相同, 但不调用 super, 以免基类对每次上报打 INFO。
         """
-        super().periodic_report()
+        if not self._latest_cache:
+            if not self._logged_empty_cache:
+                self.logger.debug("缓存为空, SV 上报跳过（等待电流/电压传感器数据）")
+                self._logged_empty_cache = True
+            return
 
-        # 每秒输出一次统计 (4000帧/秒)
+        self._logged_empty_cache = False
+
+        missing = [
+            sid for sid in self._downstream_ids
+            if sid not in self._latest_cache
+        ]
+        if missing and self._report_count < 5:
+            self.logger.debug(f"以下传感器尚无缓存数据: {missing}")
+
+        aggregated = self.aggregate(dict(self._latest_cache))
+        if aggregated is None:
+            self.logger.debug("aggregate() 返回 None, 跳过本轮上报")
+            return
+
+        self.report_to_upstream(aggregated)
+        self._report_count += 1
+
         samples_per_second = int(1.0 / self.report_interval)
         if self._total_sv_frames % samples_per_second == 0:
             self.logger.info(
