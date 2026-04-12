@@ -16,7 +16,7 @@ devices/process/line_mu.py
     1. 自身模拟采集 10kV 出线的电流电压（额定值附近随机抖动）
     2. 按 SV 协议打包上报给线路测控和线路保护
     3. 接收 PTP 时间同步
-    4. 支持攻击注入（inject_frame 单帧覆盖）
+    4. 支持攻击注入（inject_frame 单帧覆盖；set_continuous_inject 持续覆盖）
 """
 
 import random
@@ -39,7 +39,7 @@ class LineMergingUnit(BaseProcessAggregator):
     上报周期: 0.00025s (4kHz)
 
     数据来源: 自身模拟生成，在额定值附近随机抖动。
-    攻击注入: inject_frame() 注入单帧异常数据，消费后自动恢复正常。
+    攻击注入: inject_frame() 单帧；set_continuous_inject() 每帧异常直至 clear。
 
     Parameters
     ----------
@@ -83,6 +83,8 @@ class LineMergingUnit(BaseProcessAggregator):
 
         # ── 攻击注入 ──
         self._injected_frame: Optional[dict] = None
+        # 持续注入：合闸时每帧覆盖采样；分闸后断路器状态优先，始终报失电
+        self._continuous_inject: Optional[dict] = None
 
         # ── 自驱动线程 ──
         self._running:    bool = False
@@ -169,12 +171,34 @@ class LineMergingUnit(BaseProcessAggregator):
         self._injected_frame = override
         self.logger.warning(f"注入异常帧: {override}")
 
+    def set_continuous_inject(self, override: dict) -> None:
+        """持续按 override 上报 SV（带微小抖动，模拟异常波形）。"""
+        self._continuous_inject = dict(override)
+        self.logger.warning(f"已开启持续异常注入: {self._continuous_inject}")
+
+    def clear_continuous_inject(self) -> None:
+        """关闭持续注入，恢复常规额定值附近波动。"""
+        if self._continuous_inject is not None:
+            self._continuous_inject = None
+            self.logger.warning("已关闭持续异常注入，恢复常规电网波动采样")
+
     # ════════════════════════════════════════════
     #  自采集
     # ════════════════════════════════════════════
 
     def self_sample(self):
-        # 注入帧优先
+        # 断路器分闸优先：线路已隔离，合并单元只应反映失电，注入不覆盖
+        if self._breaker_ref is not None and self._breaker_ref.breaker_state == "open":
+            if self._injected_frame is not None:
+                discarded = self._injected_frame
+                self._injected_frame = None
+                self.logger.warning(f"线路失电，丢弃未消费的注入帧: {discarded}")
+            return {
+                "voltage": round(abs(random.gauss(0, 0.05)), 4),
+                "current": round(abs(random.gauss(0, 0.01)), 4),
+            }
+
+        # 单次注入帧（仅合闸时生效）
         if self._injected_frame is not None:
             frame = self._injected_frame
             self._injected_frame = None
@@ -184,14 +208,19 @@ class LineMergingUnit(BaseProcessAggregator):
                 "current": float(frame.get("current", self._nominal_current)),
             }
 
-        # 断路器已分闸：线路失电，电流归零，电压跌落
-        if self._breaker_ref is not None and self._breaker_ref.breaker_state == "open":
+        # 持续过压/过流注入（仅合闸时生效）
+        if self._continuous_inject is not None:
+            base = self._continuous_inject
+            v0 = float(base.get("voltage", self._nominal_voltage))
+            c0 = float(base.get("current", self._nominal_current))
+            voltage = v0 + random.gauss(0, max(v0 * 0.002, 0.02))
+            current = c0 + random.gauss(0, max(c0 * 0.005, 0.1))
             return {
-                "voltage": round(abs(random.gauss(0, 0.05)), 4),
-                "current": round(abs(random.gauss(0, 0.01)), 4),
+                "voltage": round(voltage, 4),
+                "current": round(current, 4),
             }
 
-        # 正常运行：额定值附近随机抖动
+        # 正常运行：额定值附近随机抖动（常规电网波动）
         voltage = self._nominal_voltage + random.gauss(0, self._nominal_voltage * 0.02)
         current = self._nominal_current + random.gauss(0, self._nominal_current * 0.03)
         return {
