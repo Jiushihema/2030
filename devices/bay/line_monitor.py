@@ -15,6 +15,8 @@ class LineMonitorDevice(BaseBayDevice):
 
     OVERVOLTAGE_THRESHOLD = 12.0  # kV
     RECLOSE_DELAY         = 3.0   # 秒，方便手动演示
+    # 累计过压跳闸达到此次数时起闭锁自动重合闸（前几次仍可重合）
+    RECLOSE_LOCK_AT_OVERVOLTAGE_TRIP = 5
 
     def __init__(self, device_id="line_monitor", bus=None):
         super().__init__(device_id=device_id, bus=bus)
@@ -23,6 +25,9 @@ class LineMonitorDevice(BaseBayDevice):
         self._last_voltage:          float = 0.0
         self._last_breaker_position: str   = "close"
         self._reclose_armed:         bool  = False
+        self._protection_locked:       bool  = False
+        self._auto_reclose_enabled:    bool  = True
+        self._overvoltage_trip_count:  int   = 0
 
     # ════════════════════════════════════════════
     #  过程层数据处理
@@ -40,6 +45,20 @@ class LineMonitorDevice(BaseBayDevice):
         self._last_voltage = voltage
 
         if voltage > self.OVERVOLTAGE_THRESHOLD:
+            if self._protection_locked:
+                return
+            self._protection_locked = True
+            self._overvoltage_trip_count += 1
+            if self._overvoltage_trip_count >= self.RECLOSE_LOCK_AT_OVERVOLTAGE_TRIP:
+                self._auto_reclose_enabled = False
+                self._reclose_armed = False
+                if self._reclose_timer is not None:
+                    self._reclose_timer.cancel()
+                    self._reclose_timer = None
+                self.logger.warning(
+                    "已达第 %d 次过压跳闸，已禁止自动重合闸",
+                    self._overvoltage_trip_count,
+                )
             self.logger.warning(f"线路过压，执行本地紧急切除！voltage={voltage}kV")
             self.command_to_process(
                 receiver_id="breaker_it",
@@ -55,6 +74,9 @@ class LineMonitorDevice(BaseBayDevice):
                 app_protocol=AppProtocol.MMS,
             )
         else:
+            if self._protection_locked:
+                self._protection_locked = False
+                self.logger.info("保护闭锁解除")
             self.report_to_station(
                 receiver_id="monitor_host",
                 payload={"line_voltage": voltage, "line_current": current},
@@ -69,9 +91,14 @@ class LineMonitorDevice(BaseBayDevice):
         if msg.msg_type == MsgType.ACK:
             result = payload.get("result", {})
             if result.get("success") and result.get("action") == "open":
-                self.logger.info("分闸成功，启动重合闸计时器")
-                self._reclose_armed = True
-                self._schedule_reclose()
+                if not self._auto_reclose_enabled:
+                    self.logger.warning(
+                        "过压跳闸次数已达闭锁阈值，不再启动重合闸计时器（需人工合闸或系统重置）"
+                    )
+                else:
+                    self.logger.info("分闸成功，启动重合闸计时器")
+                    self._reclose_armed = True
+                    self._schedule_reclose()
             elif not result.get("success"):
                 # 分闸失败（可能传感器被篡改导致拒绝执行）
                 self.logger.warning(

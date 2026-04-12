@@ -111,10 +111,22 @@ def _get_total(data_server: DataServerDevice) -> int:
 #  Socket 指令服务器
 # ════════════════════════════════════════════
 
+_OVERVOLTAGE_PAYLOAD = {"voltage": 25.0, "current": 200.0}
+
+
 def _dispatch(cmd: str, ctx: SimContext) -> None:
-    if cmd == "1":
-        ctx.line_mu.inject_frame({"voltage": 25.0, "current": 200.0})
-        logger.warning("已注入过压帧: voltage=25.0kV  current=200.0A")
+    if cmd == "1-1":
+        ctx.line_mu.clear_continuous_inject()
+        ctx.line_mu.inject_frame(dict(_OVERVOLTAGE_PAYLOAD))
+        logger.warning(
+            "【1-1】常规电网波动下注入单次过压帧 → 测控过压切除 → 重合闸条件满足后可恢复"
+        )
+
+    elif cmd == "1-2":
+        ctx.line_mu.set_continuous_inject(_OVERVOLTAGE_PAYLOAD)
+        logger.warning(
+            "【1-2】合闸时持续过压帧；分闸后注入不生效，SV 为失电数据"
+        )
 
     elif cmd == "2":
         # 篡改传感器：强制显示 open，让 breaker_it 误判已分闸，拒绝执行 trip
@@ -148,6 +160,7 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
         logger.warning("授时欺骗")
 
     elif cmd == "r":
+        ctx.line_mu.clear_continuous_inject()
         ctx.mechanical_sensor._spring_charged = True
         ctx.mechanical_sensor.set_position("closed")
         ctx.line_monitor._reclose_armed = False
@@ -158,6 +171,11 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
         ctx.is_time_spoofing = False
         topo.add_link("time_sync", "breaker_it")
         topo.remove_link("fake_time_sync", "breaker_it")
+        ctx.line_monitor._protection_locked = False
+        ctx.line_monitor._auto_reclose_enabled = True
+        ctx.line_monitor._overvoltage_trip_count = 0
+        if ctx.breaker_it.breaker_state != "closed":
+            ctx.breaker_it.execute_command({"action": "close"})
         logger.warning("所有状态已重置")
 
     elif cmd == "s":
