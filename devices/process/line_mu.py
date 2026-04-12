@@ -85,6 +85,7 @@ class LineMergingUnit(BaseProcessAggregator):
         self._injected_frame: Optional[dict] = None
         # 持续注入：合闸时每帧覆盖采样；分闸后断路器状态优先，始终报失电
         self._continuous_inject: Optional[dict] = None
+        self._continuous_override: Optional[dict] = None
 
         # ── 自驱动线程 ──
         self._running:    bool = False
@@ -182,6 +183,16 @@ class LineMergingUnit(BaseProcessAggregator):
             self._continuous_inject = None
             self.logger.warning("已关闭持续异常注入，恢复常规电网波动采样")
 
+    def set_continuous_override(self, override: dict) -> None:
+        """持续 override 上报 SV（带微小抖动，模拟异常波形）。"""
+        self._continuous_override = dict(override)
+        self.logger.warning(f"电网出现过载: {self._continuous_inject}")
+
+    def clear_continuous_override(self) -> None:
+        """关闭持续注入，恢复常规额定值附近波动。"""
+        if self._continuous_override is not None:
+            self._continuous_override = None
+
     # ════════════════════════════════════════════
     #  自采集
     # ════════════════════════════════════════════
@@ -189,28 +200,41 @@ class LineMergingUnit(BaseProcessAggregator):
     def self_sample(self):
         # 断路器分闸优先：线路已隔离，合并单元只应反映失电，注入不覆盖
         if self._breaker_ref is not None and self._breaker_ref.breaker_state == "open":
-            if self._injected_frame is not None:
-                discarded = self._injected_frame
-                self._injected_frame = None
-                self.logger.warning(f"线路失电，丢弃未消费的注入帧: {discarded}")
+            # if self._injected_frame is not None:
+            #     discarded = self._injected_frame
+            #     self._injected_frame = None
+            #     self.logger.warning(f"线路失电，丢弃未消费的注入帧: {discarded}")
+            self.clear_continuous_override()
             return {
                 "voltage": round(abs(random.gauss(0, 0.05)), 4),
                 "current": round(abs(random.gauss(0, 0.01)), 4),
             }
 
         # 单次注入帧（仅合闸时生效）
-        if self._injected_frame is not None:
-            frame = self._injected_frame
-            self._injected_frame = None
-            self.logger.warning(f"消费注入帧: {frame}")
-            return {
-                "voltage": float(frame.get("voltage", self._nominal_voltage)),
-                "current": float(frame.get("current", self._nominal_current)),
-            }
+        # if self._injected_frame is not None:
+        #     frame = self._injected_frame
+        #     self._injected_frame = None
+        #     self.logger.warning(f"消费注入帧: {frame}")
+        #     return {
+        #         "voltage": float(frame.get("voltage", self._nominal_voltage)),
+        #         "current": float(frame.get("current", self._nominal_current)),
+        #     }
 
         # 持续过压/过流注入（仅合闸时生效）
         if self._continuous_inject is not None:
             base = self._continuous_inject
+            v0 = float(base.get("voltage", self._nominal_voltage))
+            c0 = float(base.get("current", self._nominal_current))
+            voltage = v0 + random.gauss(0, max(v0 * 0.002, 0.02))
+            current = c0 + random.gauss(0, max(c0 * 0.005, 0.1))
+            return {
+                "voltage": round(voltage, 4),
+                "current": round(current, 4),
+            }
+
+        # 持续过压/过流异常（仅合闸时生效）
+        if self._continuous_override is not None:
+            base = self._continuous_override
             v0 = float(base.get("voltage", self._nominal_voltage))
             c0 = float(base.get("current", self._nominal_current))
             voltage = v0 + random.gauss(0, max(v0 * 0.002, 0.02))
