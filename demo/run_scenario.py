@@ -21,6 +21,7 @@ os.system("")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from common.bus import MessageBus
+from common.message import Message, MsgType, AppProtocol, TransportMedium
 from common.topology import TopologyRegistry
 from config.topology_config import SUBSTATION_TOPOLOGY
 from devices.sensors.mechanical_sensor import MechanicalSensor
@@ -106,6 +107,7 @@ class SimContext:
     is_3_1: bool = False
     is_3_2: bool = False
     is_4: bool = False
+    is_5: bool = False
 
 
 def _get_total(data_server: DataServerDevice) -> int:
@@ -132,6 +134,7 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
             ctx.line_mu.clear_continuous_inject()
             ctx.line_monitor._protection_locked = False
             ctx.line_monitor._auto_reclose_enabled = True
+            ctx.line_monitor.suppress_overvoltage_protection = False
             ctx.line_monitor._overvoltage_trip_count = 0
             ctx.line_monitor._voltage_window.clear()
             ctx.line_monitor._overvoltage_persistent_ticks = 0
@@ -187,6 +190,46 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
             logger.warning("授时欺骗结束")
             ctx.is_4 = False
 
+    elif cmd == "5":
+        # 攻击5：伪造间隔层 GOOSE 直投过程层合闸；闭锁过压跳闸与自动重合闸
+        if not ctx.is_5:
+            ctx.line_monitor.suppress_overvoltage_protection = True
+            ctx.line_monitor._auto_reclose_enabled = False
+            ctx.line_monitor._reclose_armed = False
+            if ctx.line_monitor._reclose_timer is not None:
+                ctx.line_monitor._reclose_timer.cancel()
+                ctx.line_monitor._reclose_timer = None
+            now = time.time()
+            forged = Message(
+                sender_id="line_monitor",
+                receiver_id="breaker_it",
+                msg_type=MsgType.CMD,
+                app_protocol=AppProtocol.GOOSE,
+                transport_medium=TransportMedium.RF_LOW_LATENCY,
+                payload={
+                    "action": "close",
+                    "reason": "forged_bay_goose_injection",
+                    "cmd_time": now,
+                },
+                timestamp=now,
+            )
+            ok = ctx.bus.send(forged)
+            if ok:
+                logger.warning(
+                    "攻击5：已伪造间隔层报文直投断路器智能终端合闸；"
+                    "过压本地切除与自动重合闸已闭锁（可再次输入 5 解除）"
+                )
+            else:
+                logger.warning(
+                    "攻击5：伪造合闸报文投递失败（检查拓扑链路 line_monitor↔breaker_it 是否被切断）"
+                )
+            ctx.is_5 = True
+        else:
+            ctx.line_monitor.suppress_overvoltage_protection = False
+            ctx.line_monitor._auto_reclose_enabled = True
+            logger.warning("攻击5 结束：过压保护判据与自动重合闸策略已恢复为默认")
+            ctx.is_5 = False
+
     elif cmd == "m-1":
         ctx.operator_station.send_manual_command("line_monitor", "breaker_it", "close")
         logger.warning("人工合闸")
@@ -214,6 +257,7 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
         topo.remove_link("fake_time_sync", "breaker_it")
         ctx.line_monitor._protection_locked = False
         ctx.line_monitor._auto_reclose_enabled = True
+        ctx.line_monitor.suppress_overvoltage_protection = False
         ctx.line_monitor._overvoltage_trip_count = 0
         ctx.line_monitor._voltage_window.clear()
         ctx.line_monitor._overvoltage_persistent_ticks = 0
@@ -225,6 +269,7 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
         ctx.is_3_1 = False
         ctx.is_3_2 = False
         ctx.is_4 = False
+        ctx.is_5 = False
         _pause_event.clear()  # ← 解除暂停，主循环恢复
         logger.warning("所有状态已重置")
 

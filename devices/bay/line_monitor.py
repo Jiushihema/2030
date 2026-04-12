@@ -44,6 +44,8 @@ class LineMonitorDevice(BaseBayDevice):
         self._protection_locked:       bool  = False
         self._auto_reclose_enabled:    bool  = True
         self._overvoltage_trip_count:  int   = 0
+        # 演示用：闭锁过压判据触发的本地跳闸（不阻止 SV 上送与窗口统计）
+        self.suppress_overvoltage_protection: bool = False
 
     # ════════════════════════════════════════════
     #  过程层数据处理
@@ -89,7 +91,11 @@ class LineMonitorDevice(BaseBayDevice):
             and self._overvoltage_persistent_ticks >= self.OVERVOLTAGE_PERSIST_COUNT
         )
 
-        if persist_ok and window_stat > self.OVERVOLTAGE_THRESHOLD:
+        if (
+            persist_ok
+            and window_stat > self.OVERVOLTAGE_THRESHOLD
+            and not self.suppress_overvoltage_protection
+        ):
             if self._protection_locked:
                 return
             self._protection_locked = True
