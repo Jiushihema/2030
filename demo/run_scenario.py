@@ -21,6 +21,7 @@ os.system("")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from common.bus import MessageBus
+from common.message import Message, MsgType, AppProtocol, TransportMedium
 from common.topology import TopologyRegistry
 from config.topology_config import SUBSTATION_TOPOLOGY
 from devices.sensors.mechanical_sensor import MechanicalSensor
@@ -152,6 +153,35 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
         ctx.is_time_spoofing = True
         logger.warning("授时欺骗")
 
+    elif cmd == "7":
+        ts = time.time()
+        ctx.line_monitor._suppress_auto_trip_and_reclose = True
+        ctx.line_monitor._reclose_armed = False
+        if ctx.line_monitor._reclose_timer is not None:
+            ctx.line_monitor._reclose_timer.cancel()
+            ctx.line_monitor._reclose_timer = None
+        forged = Message(
+            sender_id="line_monitor",
+            receiver_id="breaker_it",
+            msg_type=MsgType.CMD,
+            app_protocol=AppProtocol.GOOSE,
+            transport_medium=TransportMedium.RF_LOW_LATENCY,
+            payload={
+                "action": "close",
+                "reason": "forged_bay_goose_close",
+                "cmd_time": ts,
+            },
+            timestamp=ts,
+        )
+        delivered = ctx.bus.send(forged)
+        if not delivered:
+            ctx.breaker_it.on_message(forged)
+        logger.warning(
+            "【7】伪造间隔层报文：冒充 line_monitor 令断路器合闸（投递=%s）；"
+            "并已闭锁测控侧自动分闸与自动重合闸",
+            "经总线" if delivered else "拓扑阻断，直送 breaker 处理入口",
+        )
+
     elif cmd == "r":
         ctx.line_mu.clear_continuous_inject()
         ctx.mechanical_sensor._spring_charged = True
@@ -170,6 +200,7 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
         ctx.line_monitor._voltage_window.clear()
         ctx.line_monitor._overvoltage_persistent_ticks = 0
         ctx.line_monitor._last_window_stat = None
+        ctx.line_monitor._suppress_auto_trip_and_reclose = False
         if ctx.breaker_it.breaker_state != "closed":
             ctx.breaker_it.execute_command({"action": "close"})
         logger.warning("所有状态已重置")

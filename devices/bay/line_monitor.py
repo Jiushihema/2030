@@ -44,6 +44,8 @@ class LineMonitorDevice(BaseBayDevice):
         self._protection_locked:       bool  = False
         self._auto_reclose_enabled:    bool  = True
         self._overvoltage_trip_count:  int   = 0
+        # 演示攻击：伪造过程层合闸等场景下闭锁本地自动分闸/重合闸
+        self._suppress_auto_trip_and_reclose: bool = False
 
     # ════════════════════════════════════════════
     #  过程层数据处理
@@ -89,7 +91,11 @@ class LineMonitorDevice(BaseBayDevice):
             and self._overvoltage_persistent_ticks >= self.OVERVOLTAGE_PERSIST_COUNT
         )
 
-        if persist_ok and window_stat > self.OVERVOLTAGE_THRESHOLD:
+        if (
+            persist_ok
+            and window_stat > self.OVERVOLTAGE_THRESHOLD
+            and not self._suppress_auto_trip_and_reclose
+        ):
             if self._protection_locked:
                 return
             self._protection_locked = True
@@ -153,7 +159,11 @@ class LineMonitorDevice(BaseBayDevice):
         if msg.msg_type == MsgType.ACK:
             result = payload.get("result", {})
             if result.get("success") and result.get("action") == "open":
-                if not self._auto_reclose_enabled:
+                if self._suppress_auto_trip_and_reclose:
+                    self.logger.warning(
+                        "自动重合闸已闭锁（间隔/过程层控制被伪造，本地不再启动计时器）"
+                    )
+                elif not self._auto_reclose_enabled:
                     self.logger.warning(
                         "过压跳闸次数已达闭锁阈值，不再启动重合闸计时器（需人工合闸或系统重置）"
                     )
@@ -208,6 +218,12 @@ class LineMonitorDevice(BaseBayDevice):
         if not self._reclose_armed:
             return
         self._reclose_armed = False
+
+        if self._suppress_auto_trip_and_reclose:
+            self.logger.warning(
+                "重合闸计时器到期，但自动合闸已被攻击闭锁，不再下发合闸"
+            )
+            return
 
         v_chk = (
             self._last_window_stat
