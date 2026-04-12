@@ -84,6 +84,7 @@ _s_handler.setFormatter(ScenarioFormatter(
 logger.addHandler(_s_handler)
 
 _stop_event = threading.Event()
+_pause_event = threading.Event()
 
 
 # ════════════════════════════════════════════
@@ -100,6 +101,11 @@ class SimContext:
     bus:               MessageBus
     operator_station:  OperatorStationDevice
     is_time_spoofing: bool = False
+    is_1_1: bool = False
+    is_1_2: bool = False
+    is_3_1: bool = False
+    is_3_2: bool = False
+    is_4: bool = False
 
 
 def _get_total(data_server: DataServerDevice) -> int:
@@ -115,44 +121,81 @@ _OVERVOLTAGE_PAYLOAD = {"voltage": 25.0, "current": 200.0}
 
 
 def _dispatch(cmd: str, ctx: SimContext) -> None:
-    if cmd == "1":
-        ctx.line_mu.set_continuous_inject(_OVERVOLTAGE_PAYLOAD)
-        logger.warning(
-            "合闸时持续过压帧；分闸后注入不生效，SV 为失电数据"
-        )
+    if cmd == "1-1":
+        if not ctx.is_1_1:
+            ctx.line_mu.set_continuous_inject(_OVERVOLTAGE_PAYLOAD)
+            logger.warning(
+                "合闸时持续过压帧；分闸后注入不生效，SV 为失电数据"
+            )
+            ctx.is_1_1 = True
+        else:
+            ctx.line_mu.clear_continuous_inject()
+            ctx.line_monitor._protection_locked = False
+            ctx.line_monitor._auto_reclose_enabled = True
+            ctx.line_monitor._overvoltage_trip_count = 0
+            ctx.line_monitor._voltage_window.clear()
+            ctx.line_monitor._overvoltage_persistent_ticks = 0
+            ctx.line_monitor._last_window_stat = None
+            if ctx.breaker_it.breaker_state != "closed":
+                ctx.breaker_it.execute_command({"action": "close"})
+            ctx.is_1_1 = False
 
-    elif cmd == "2":
+    elif cmd == "1-2":
         # 篡改传感器：强制显示 open，让 breaker_it 误判已分闸，拒绝执行 trip
-        ctx.mechanical_sensor._position = "open"
-        ctx.mechanical_sensor._last_sample_value = None
-        logger.warning(
-            "已篡改传感器位置为 open，trip 指令将被拒绝，线路持续带故障！"
-        )
+        if not ctx.is_1_2:
+            ctx.mechanical_sensor._position = "open"
+            ctx.mechanical_sensor._last_sample_value = None
+            logger.warning("已篡改传感器位置为 open，trip 指令将被拒绝，线路持续带故障！")
+            ctx.is_1_2 = True
+        else:
+            ctx.mechanical_sensor._spring_charged = True
+            ctx.mechanical_sensor.set_position("closed")
+            logger.warning("传感器位置篡改结束")
+            ctx.is_1_2 = False
     
     elif cmd == "3-1":
-        topo.remove_link("line_monitor", "monitor_host")
-        logger.warning("通信干扰成功。【间隔层-站控层】通信链路已在物理层瘫痪")
+        if not ctx.is_3_1:
+            topo.remove_link("line_monitor", "monitor_host")
+            logger.warning("通信干扰成功。【间隔层-站控层】通信链路已在物理层瘫痪")
+            ctx.is_3_1 = True
+        else:
+            topo.add_link("line_monitor", "monitor_host")
+            logger.warning("【间隔层-站控层】通信干扰成功结束")
+            ctx.is_3_1 = False
 
     elif cmd == "3-2":
-        topo.remove_link("line_monitor", "breaker_it")
-        # topo.remove_link("line_monitor", "line_mu")
-        logger.warning("通信干扰成功。【过程层-间隔层】通信链路已在物理层瘫痪")
+        if not ctx.is_3_2:
+            topo.remove_link("line_monitor", "breaker_it")
+            logger.warning("通信干扰成功。【断路器-间隔层】通信链路已在物理层瘫痪")
+            ctx.is_3_2 = True
+        else:
+            topo.add_link("line_monitor", "breaker_it")
+            logger.warning("【断路器-间隔层】通信干扰成功结束")
+            ctx.is_3_2 = False
 
     elif cmd == "4":
+        if not ctx.is_4:
+            topo.remove_link("time_sync", "breaker_it")
+            topo.add_link("fake_time_sync", "breaker_it")
+            ctx.is_time_spoofing = True
+            logger.warning("授时欺骗")
+            ctx.is_4 = True
+        else:
+            topo.add_link("time_sync", "breaker_it")
+            topo.remove_link("fake_time_sync", "breaker_it")
+            ctx.is_time_spoofing = False
+            logger.warning("授时欺骗结束")
+            ctx.is_4 = False
+
+    elif cmd == "m-1":
         ctx.operator_station.send_manual_command("line_monitor", "breaker_it", "close")
         logger.warning("人工合闸")
 
-    elif cmd == "5":
+    elif cmd == "m-2":
         ctx.operator_station.send_manual_command("line_monitor", "breaker_it", "trip")
         logger.warning("人工分闸")
 
-    elif cmd == "6":
-        topo.remove_link("time_sync", "breaker_it")
-        topo.add_link("fake_time_sync", "breaker_it")
-        ctx.is_time_spoofing = True
-        logger.warning("授时欺骗")
-
-    elif cmd == "0":
+    elif cmd == "o":
         ctx.line_mu.set_continuous_override(_OVERVOLTAGE_PAYLOAD)
         logger.warning("电网过载异常")
 
@@ -177,7 +220,14 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
         ctx.line_monitor._last_window_stat = None
         if ctx.breaker_it.breaker_state != "closed":
             ctx.breaker_it.execute_command({"action": "close"})
+        ctx.is_1_1 = False
+        ctx.is_1_2 = False
+        ctx.is_3_1 = False
+        ctx.is_3_2 = False
+        ctx.is_4 = False
+        _pause_event.clear()  # ← 解除暂停，主循环恢复
         logger.warning("所有状态已重置")
+
 
     elif cmd == "s":
         last = ctx.line_mu.last_sample
@@ -294,8 +344,13 @@ def run() -> None:
     prev_breaker_state = breaker_it.breaker_state
     tick = 0
     SUMMARY_TICKS = 1
+    BOOM_COUNT = 0
 
     while not _stop_event.is_set():
+        if _pause_event.is_set():
+            time.sleep(0.5)
+            continue
+
         time.sleep(1)
         tick += 1
 
@@ -321,6 +376,29 @@ def run() -> None:
                 mechanical_sensor.position,
                 _get_total(data_server),
             )
+
+            if abs(v - 25) < 5 and abs(c - 200) < 5:
+                BOOM_COUNT += 1
+            else:
+                BOOM_COUNT = 0
+
+        if BOOM_COUNT > 20:
+            BOOM_COUNT = 0          # ← 重置计数，避免重复触发
+            _pause_event.set()      # ← 设置暂停标志
+            logger.info(r"""
+                  _.-^^---....,,--       
+              _--                  --_  
+             <    电厂 B O O M ! !     >)
+             |                         | 
+              \._                   _./  
+                 ```--. . , ; .--'''       
+                       | |   |             
+                    .-=||  | |=-.   
+                    `-=#$%&%$#=-'   
+                       | ;  :|     
+              _____.,-#%&$@%#&#~,._____
+             """)
+            logger.warning("仿真已暂停！请在控制台输入 [r] 重置并继续...")
 
     # ── 清理 ──
     line_mu.stop()
