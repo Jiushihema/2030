@@ -159,6 +159,10 @@ class LineMonitorDevice(BaseBayDevice):
         if msg.msg_type == MsgType.ACK:
             result = payload.get("result", {})
             if result.get("success") and result.get("action") == "open":
+                # 分闸后线路进入失电态，清空过压滑窗，避免历史高压残留导致重合闸误判失败
+                self._voltage_window.clear()
+                self._overvoltage_persistent_ticks = 0
+                self._last_window_stat = None
                 if not self._auto_reclose_enabled:
                     self.logger.warning(
                         "过压跳闸次数已达闭锁阈值，不再启动重合闸计时器（需人工合闸或系统重置）"
