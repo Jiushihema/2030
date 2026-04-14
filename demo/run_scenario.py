@@ -11,6 +11,7 @@ import sys
 import os
 import time
 import socket
+import json
 import logging
 import argparse
 import threading
@@ -35,6 +36,8 @@ from devices.station.time_sync import TimeSyncDevice
 
 CONSOLE_HOST = "localhost"
 CONSOLE_PORT = 9999
+TELEMETRY_HOST = "localhost"
+TELEMETRY_PORT = 9998
 
 # ── 日志初始化 ──
 os.makedirs("logs", exist_ok=True)
@@ -86,6 +89,7 @@ logger.addHandler(_s_handler)
 
 _stop_event = threading.Event()
 _pause_event = threading.Event()
+_plant_exploded = threading.Event()
 
 
 # ════════════════════════════════════════════
@@ -115,6 +119,77 @@ def _get_total(data_server: DataServerDevice) -> int:
     return sum(count.values()) if isinstance(count, dict) else count
 
 
+class TelemetryPushServer:
+    """简易遥测推送服务: TCP 文本行(JSON)"""
+    def __init__(self, host: str = TELEMETRY_HOST, port: int = TELEMETRY_PORT):
+        self.host = host
+        self.port = port
+        self._srv = None
+        self._clients = set()
+        self._lock = threading.Lock()
+        self._thread = None
+        self._running = threading.Event()
+
+    def start(self):
+        self._running.set()
+        self._thread = threading.Thread(target=self._accept_loop, name="telemetry_push_server", daemon=True)
+        self._thread.start()
+        logger.info("遥测推送已启动: %s:%d", self.host, self.port)
+
+    def _accept_loop(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
+            self._srv = srv
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind((self.host, self.port))
+            srv.listen(5)
+            srv.settimeout(1.0)
+            while self._running.is_set() and not _stop_event.is_set():
+                try:
+                    conn, _ = srv.accept()
+                    conn.setblocking(True)
+                    with self._lock:
+                        self._clients.add(conn)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+
+    def broadcast(self, payload: dict):
+        data = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+        dead = []
+        with self._lock:
+            clients = list(self._clients)
+        for conn in clients:
+            try:
+                conn.sendall(data)
+            except Exception:
+                dead.append(conn)
+        if dead:
+            with self._lock:
+                for conn in dead:
+                    self._clients.discard(conn)
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+    def stop(self):
+        self._running.clear()
+        if self._srv is not None:
+            try:
+                self._srv.close()
+            except Exception:
+                pass
+        with self._lock:
+            clients = list(self._clients)
+            self._clients.clear()
+        for conn in clients:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 # ════════════════════════════════════════════
 #  Socket 指令服务器
 # ════════════════════════════════════════════
@@ -123,14 +198,16 @@ _OVERVOLTAGE_PAYLOAD = {"voltage": 25.0, "current": 200.0}
 
 
 def _dispatch(cmd: str, ctx: SimContext) -> None:
-    if cmd == "1-1":
-        if not ctx.is_1_1:
+    if cmd in ("1-1", "1-1-on", "1-1-off"):
+        turn_on = (cmd == "1-1-on") or (cmd == "1-1" and not ctx.is_1_1)
+        turn_off = (cmd == "1-1-off") or (cmd == "1-1" and ctx.is_1_1)
+        if turn_on:
             ctx.line_mu.set_continuous_inject(_OVERVOLTAGE_PAYLOAD)
             logger.warning(
                 "合闸时持续过压帧；分闸后注入不生效，SV 为失电数据"
             )
             ctx.is_1_1 = True
-        else:
+        elif turn_off:
             ctx.line_mu.clear_continuous_inject()
             ctx.line_monitor._protection_locked = False
             ctx.line_monitor._auto_reclose_enabled = True
@@ -143,15 +220,16 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
                 ctx.breaker_it.execute_command({"action": "close"})
             ctx.is_1_1 = False
 
-    elif cmd == "1-2":
+    elif cmd in ("1-2", "1-2-on", "1-2-off"):
         # 篡改传感器：强制显示 open，让 breaker_it 误判已分闸，拒绝执行 trip
-        if not ctx.is_1_2:
-            ctx.mechanical_sensor._position = "open"
-            ctx.mechanical_sensor._last_sample_value = None
+        turn_on = (cmd == "1-2-on") or (cmd == "1-2" and not ctx.is_1_2)
+        turn_off = (cmd == "1-2-off") or (cmd == "1-2" and ctx.is_1_2)
+        if turn_on:
+            # 使用传感器标准状态接口，确保立即事件上报到 breaker_it 缓存
+            ctx.mechanical_sensor.set_position("open")
             logger.warning("已篡改传感器位置为 open，trip 指令将被拒绝，线路持续带故障！")
             ctx.is_1_2 = True
-        else:
-            ctx.mechanical_sensor._spring_charged = True
+        elif turn_off:
             ctx.mechanical_sensor.set_position("closed")
             logger.warning("传感器位置篡改结束")
             ctx.is_1_2 = False
@@ -190,9 +268,11 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
             logger.warning("授时欺骗结束")
             ctx.is_4 = False
 
-    elif cmd == "5":
+    elif cmd in ("5", "5-on", "5-off"):
         # 攻击5：伪造间隔层 GOOSE 直投过程层合闸；闭锁过压跳闸与自动重合闸
-        if not ctx.is_5:
+        turn_on = (cmd == "5-on") or (cmd == "5" and not ctx.is_5)
+        turn_off = (cmd == "5-off") or (cmd == "5" and ctx.is_5)
+        if turn_on:
             ctx.line_monitor.suppress_overvoltage_protection = True
             ctx.line_monitor._auto_reclose_enabled = False
             ctx.line_monitor._reclose_armed = False
@@ -224,7 +304,7 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
                     "攻击5：伪造合闸报文投递失败（检查拓扑链路 line_monitor↔breaker_it 是否被切断）"
                 )
             ctx.is_5 = True
-        else:
+        elif turn_off:
             ctx.line_monitor.suppress_overvoltage_protection = False
             ctx.line_monitor._auto_reclose_enabled = True
             logger.warning("攻击5 结束：过压保护判据与自动重合闸策略已恢复为默认")
@@ -270,6 +350,7 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
         ctx.is_3_2 = False
         ctx.is_4 = False
         ctx.is_5 = False
+        _plant_exploded.clear()
         _pause_event.clear()  # ← 解除暂停，主循环恢复
         logger.warning("所有状态已重置")
 
@@ -298,10 +379,26 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
 
 
 def socket_server(ctx: SimContext) -> None:
+    def _handle_client(conn: socket.socket, addr) -> None:
+        logger.info("控制端已连接: %s", addr)
+        with conn:
+            conn.settimeout(1.0)
+            while not _stop_event.is_set():
+                try:
+                    data = conn.recv(64).decode().strip().lower()
+                except socket.timeout:
+                    continue
+                except Exception:
+                    break
+                if not data:
+                    break
+                _dispatch(data, ctx)
+        logger.info("控制端已断开: %s", addr)
+
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv.bind((CONSOLE_HOST, CONSOLE_PORT))
-        srv.listen(1)
+        srv.listen(8)
         srv.settimeout(1.0)
         logger.info("指令监听已启动: %s:%d  等待控制台连接...", CONSOLE_HOST, CONSOLE_PORT)
 
@@ -312,22 +409,12 @@ def socket_server(ctx: SimContext) -> None:
                 continue
             except OSError:
                 break
-
-            logger.info("控制台已连接: %s", addr)
-            with conn:
-                conn.settimeout(1.0)
-                while not _stop_event.is_set():
-                    try:
-                        data = conn.recv(64).decode().strip().lower()
-                    except socket.timeout:
-                        continue
-                    except Exception:
-                        break
-                    if not data:
-                        break
-                    _dispatch(data, ctx)
-
-            logger.info("控制台已断开")
+            threading.Thread(
+                target=_handle_client,
+                args=(conn, addr),
+                name=f"cmd_client_{addr[0]}_{addr[1]}",
+                daemon=True,
+            ).start()
 
 
 # ════════════════════════════════════════════
@@ -379,6 +466,8 @@ def run() -> None:
 
     logger.info("电站全链路仿真演示启动（并行运行模式）")
     logger.info("断路器初始状态: %s", breaker_it.breaker_state)
+    telemetry_push = TelemetryPushServer()
+    telemetry_push.start()
 
     # ── 启动 socket 服务器线程 ──
     server_thread = threading.Thread(
@@ -415,14 +504,24 @@ def run() -> None:
             last = line_mu.last_sample
             v = last.get("voltage", 0) if last else 0
             c = last.get("current", 0) if last else 0
+            stored = _get_total(data_server)
             logger.info(
                 "voltage=%5.1fkV  current=%5.1fA  "
                 "断路器=%-12s  传感器=%-12s  入库=%d",
                 v, c,
                 breaker_it.breaker_state,
                 mechanical_sensor.position,
-                _get_total(data_server),
+                stored,
             )
+            telemetry_push.broadcast({
+                "voltage": v,
+                "current": c,
+                "breakerState": breaker_it.breaker_state,
+                "sensorState": mechanical_sensor.position,
+                "storedCount": stored,
+                "plantState": "exploded" if _plant_exploded.is_set() else "normal",
+                "updatedAt": time.time(),
+            })
 
             if abs(v - 25) < 5 and abs(c - 200) < 5:
                 BOOM_COUNT += 1
@@ -431,7 +530,17 @@ def run() -> None:
 
         if BOOM_COUNT > 20:
             BOOM_COUNT = 0          # ← 重置计数，避免重复触发
+            _plant_exploded.set()
             _pause_event.set()      # ← 设置暂停标志
+            telemetry_push.broadcast({
+                "voltage": v,
+                "current": c,
+                "breakerState": breaker_it.breaker_state,
+                "sensorState": mechanical_sensor.position,
+                "storedCount": stored,
+                "plantState": "exploded",
+                "updatedAt": time.time(),
+            })
             logger.info(r"""
                   _.-^^---....,,--       
               _--                  --_  
@@ -451,6 +560,7 @@ def run() -> None:
     line_mu.stop()
     mechanical_sensor.stop()
     server_thread.join(timeout=2)
+    telemetry_push.stop()
 
     logger.info("演示完成")
     logger.info(
