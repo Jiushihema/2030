@@ -302,6 +302,8 @@ def run() -> None:
     operator_station = OperatorStationDevice("operator_station", bus=bus)
     data_server       = DataServerDevice("data_server", bus=bus)
     time_sync = TimeSyncDevice("time_sync", bus=bus)
+
+    topo.register_device("fake_time_sync", 2)
     fake_time_sync = TimeSyncDevice("fake_time_sync", bus=bus)
 
     # breaker_it 必须先于 line_mu 实例化
@@ -388,7 +390,7 @@ def run() -> None:
             logger.info(r"""
                   _.-^^---....,,--       
               _--                  --_  
-             <    电厂 B O O M ! !     >)
+             <      电 厂 爆 炸 了      >)
              |                         | 
               \._                   _./  
                  ```--. . , ; .--'''       
