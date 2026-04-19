@@ -235,8 +235,8 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
             ctx.is_1_2 = False
     
     elif cmd in ("3-1", "3-1-on", "3-1-off"):
-        turn_on = (cmd == "1-2-on") or (cmd == "3-1" and not ctx.is_3_1)
-        turn_off = (cmd == "1-2-off") or (cmd == "3-1" and ctx.is_3_1)
+        turn_on = (cmd == "3-1-on") or (cmd == "3-1" and not ctx.is_3_1)
+        turn_off = (cmd == "3-1-off") or (cmd == "3-1" and ctx.is_3_1)
         if not turn_on:
             topo.remove_link("line_monitor", "monitor_host")
             logger.warning("通信干扰成功。【间隔层-站控层】通信链路已在物理层瘫痪")
