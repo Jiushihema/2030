@@ -271,7 +271,7 @@ export function useControlTower() {
       if (breakerState === 'open') {
         await sendCommandSafe('m-1')
       }
-      const ok = await sendCommandSafe('1-1-on')
+      const ok = await sendCommandSafe('o')
       if (ok) backendAttackState.overloadInjected = true
       statusMessage.value = '负荷冲击已触发，实时遥测与拓扑会继续反映线路变化。'
       return

@@ -2,7 +2,7 @@ export const SCENARIOS = {
   overload: {
     id: 'overload',
     label: '过载工况',
-    command: 'o',
+    command: '1-1-on',
     statusText: '已注入过载工况',
   },
   normal: {
