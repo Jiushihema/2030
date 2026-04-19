@@ -178,8 +178,12 @@ export const ATTACKS = {
     label: '时钟扰动',
     icon: 'T',
     description: '扰动时间同步系统，让关键节点收到偏移时标，从而影响顺序事件判断与联动时序。',
-    targetMode: 'auto',
-    autoTargetLabel: '时间同步系统及关联节点',
+    // targetMode: 'auto',
+    // autoTargetLabel: '时间同步系统及关联节点',
+    targetMode: 'manual',
+    targets: [
+      { id: 'deviceA1', label: '断路器间隔 breaker_it', focusNodeId: 'breaker_it' },
+    ],
     commands: {
       attack: '4-on',
       defend: '4-off',
