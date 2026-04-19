@@ -128,8 +128,8 @@ export const ATTACKS = {
       { id: 'gatewayB', label: '监控主站 monitor_host', focusNodeId: 'monitor_host' },
     ],
     commands: {
-      attack: '3-1-on',
-      defend: '3-1-off',
+      attack: '3-2-on',
+      defend: '3-2-off',
     },
     durations: {
       steps: 4,
