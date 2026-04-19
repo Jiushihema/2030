@@ -234,34 +234,40 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
             logger.warning("传感器位置篡改结束")
             ctx.is_1_2 = False
     
-    elif cmd == "3-1":
-        if not ctx.is_3_1:
+    elif cmd in ("3-1", "3-1-on", "3-1-off"):
+        turn_on = (cmd == "1-2-on") or (cmd == "3-1" and not ctx.is_3_1)
+        turn_off = (cmd == "1-2-off") or (cmd == "3-1" and ctx.is_3_1)
+        if not turn_on:
             topo.remove_link("line_monitor", "monitor_host")
             logger.warning("通信干扰成功。【间隔层-站控层】通信链路已在物理层瘫痪")
             ctx.is_3_1 = True
-        else:
+        elif turn_off:
             topo.add_link("line_monitor", "monitor_host")
             logger.warning("【间隔层-站控层】通信干扰成功结束")
             ctx.is_3_1 = False
 
-    elif cmd == "3-2":
-        if not ctx.is_3_2:
+    elif cmd in ("3-2", "3-2-on", "3-2-off"):
+        turn_on = (cmd == "3-2-on") or (cmd == "3-2" and not ctx.is_3_2)
+        turn_off = (cmd == "3-2-off") or (cmd == "3-2" and ctx.is_3_2)
+        if not turn_on:
             topo.remove_link("line_monitor", "breaker_it")
             logger.warning("通信干扰成功。【断路器-间隔层】通信链路已在物理层瘫痪")
             ctx.is_3_2 = True
-        else:
+        elif turn_off:
             topo.add_link("line_monitor", "breaker_it")
             logger.warning("【断路器-间隔层】通信干扰成功结束")
             ctx.is_3_2 = False
 
-    elif cmd == "4":
-        if not ctx.is_4:
+    elif cmd in ("4", "4-on", "4-off"):
+        turn_on = (cmd == "4-on") or (cmd == "4" and not ctx.is_4)
+        turn_off = (cmd == "4-off") or (cmd == "4" and ctx.is_4)
+        if not turn_on:
             topo.remove_link("time_sync", "breaker_it")
             topo.add_link("fake_time_sync", "breaker_it")
             ctx.is_time_spoofing = True
             logger.warning("授时欺骗")
             ctx.is_4 = True
-        else:
+        elif turn_off:
             topo.add_link("time_sync", "breaker_it")
             topo.remove_link("fake_time_sync", "breaker_it")
             ctx.is_time_spoofing = False
