@@ -5,7 +5,7 @@ devices/sensors/voltage_sensor.py
 
 采样模型与线路合并单元 self_sample() 一致：额定电压 + 比例高斯抖动（2% σ）。
 """
-
+import logging
 import random
 import threading
 import time
@@ -55,7 +55,7 @@ class VoltageSensor(BaseSensor):
 
     def start(self) -> None:
         if self._running:
-            self.logger.warning("周期采样线程已在运行，忽略重复启动")
+            # self.logger.warning("周期采样线程已在运行，忽略重复启动")
             return
         self._running = True
         self._thread = threading.Thread(
@@ -64,7 +64,7 @@ class VoltageSensor(BaseSensor):
             daemon=True,
         )
         self._thread.start()
-        self.logger.info(f"电压传感器周期采样启动，间隔={self.sample_interval}s")
+        self.audit_log("SYSTEM", "SENSOR_START", details={"interval": self.sample_interval}, level=logging.INFO)
 
     def stop(self) -> None:
         if not self._running:
@@ -72,7 +72,7 @@ class VoltageSensor(BaseSensor):
         self._running = False
         if self._thread is not None:
             self._thread.join(timeout=max(0.5, self.sample_interval * 4))
-        self.logger.info("电压传感器周期采样已停止")
+        self.audit_log("SYSTEM", "SENSOR_STOP", level=logging.INFO)
 
     def _loop(self) -> None:
         while self._running:
@@ -84,7 +84,7 @@ class VoltageSensor(BaseSensor):
         return round(n + random.gauss(0, n * 0.02), 4)
 
     def load_data(self, filepath: str, mode: str = "once") -> int:
-        self.logger.warning("电压传感器不支持外部 CSV，始终使用额定值仿真采样")
+        self.audit_log("DATA", "CSV_LOAD_IGNORED", details={"reason": "Simulated by nominal values"}, level=logging.WARNING)
         return 0
 
     def sample(self) -> Dict[str, Any]:
@@ -94,10 +94,10 @@ class VoltageSensor(BaseSensor):
             "uc": self._jitter_voltage(),
         }
 
-    def on_message(self, msg: Message) -> None:
-        if msg.msg_type == MsgType.SYNC:
-            self._handle_time_sync(msg)
-        else:
-            self.logger.debug(
-                f"收到非关注消息: type={msg.msg_type} from={msg.sender_id}"
-            )
+    # def on_message(self, msg: Message) -> None:
+    #     if msg.msg_type == MsgType.SYNC:
+    #         self._handle_time_sync(msg)
+    #     else:
+    #         self.logger.debug(
+    #             f"收到非关注消息: type={msg.msg_type} from={msg.sender_id}"
+    #         )

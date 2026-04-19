@@ -36,46 +36,52 @@ from devices.station.time_sync import TimeSyncDevice
 CONSOLE_HOST = "localhost"
 CONSOLE_PORT = 9999
 
-# ── 日志初始化 ──
-os.makedirs("logs", exist_ok=True)
-
 bus = MessageBus()
 topo = TopologyRegistry.get_instance()
 topo.reset()
 topo.load_config(SUBSTATION_TOPOLOGY)
 
-_file_handler = logging.FileHandler("logs/devices.log", encoding="utf-8")
-_file_handler.setLevel(logging.INFO)
-_file_handler.setFormatter(logging.Formatter(
+# ── 日志初始化 ──
+# ── 日志初始化 ──
+os.makedirs("logs", exist_ok=True)
+
+# 1. 定义通用的日志格式
+COMMON_FORMATTER = logging.Formatter(
     fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
-))
+)
+
+# 2. 设置 Root Logger (全局汇总 devices.log + 控制台告警)
+_file_handler = logging.FileHandler("logs/devices.log", encoding="utf-8")
+_file_handler.setLevel(logging.INFO)
+_file_handler.setFormatter(COMMON_FORMATTER)
 
 _console_handler = logging.StreamHandler()
 _console_handler.setLevel(logging.WARNING)
-_console_handler.setFormatter(logging.Formatter(
-    fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
-))
+_console_handler.setFormatter(COMMON_FORMATTER)
 
 _root = logging.getLogger()
 _root.setLevel(logging.INFO)
 _root.addHandler(_file_handler)
 _root.addHandler(_console_handler)
 
+# 3. 设置 Scenario Logger (带颜色的控制台输出，用于演示脚本自身的提示)
 GREEN = "\033[32m"
-RED   = "\033[31m"
+RED = "\033[31m"
 RESET = "\033[0m"
+
 
 class ScenarioFormatter(logging.Formatter):
     LEVEL_COLORS = {logging.WARNING: RED, logging.ERROR: RED}
+
     def format(self, record):
         color = self.LEVEL_COLORS.get(record.levelno, GREEN)
         return color + super().format(record) + RESET
 
+
 logger = logging.getLogger("scenario")
 logger.setLevel(logging.INFO)
-logger.propagate = False
+logger.propagate = False  # 阻止 scenario 日志流向 root(避免重复或写进 devices.log)
 _s_handler = logging.StreamHandler()
 _s_handler.setLevel(logging.INFO)
 _s_handler.setFormatter(ScenarioFormatter(
@@ -83,6 +89,39 @@ _s_handler.setFormatter(ScenarioFormatter(
     datefmt="%H:%M:%S",
 ))
 logger.addHandler(_s_handler)
+
+
+# 4. 设置各设备独立的日志文件 (工厂函数)
+def setup_device_logger(class_name: str, device_id: str) -> None:
+    """为指定设备精准匹配 logger 并创建独立的日志文件"""
+    # BaseDevice 中生成的 logger name 格式为: 类名(device_id)
+    logger_name = f"{class_name}({device_id})"
+    dev_logger = logging.getLogger(logger_name)
+    dev_logger.setLevel(logging.INFO)
+
+    fh = logging.FileHandler(f"logs/{device_id}.log", encoding="utf-8")
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(COMMON_FORMATTER)
+    dev_logger.addHandler(fh)
+
+    # 如果不希望该设备的日志再输出到总文件(devices.log)，可解开下面这行注释
+    # dev_logger.propagate = False
+
+
+DEVICE_CONFIGS = [
+    ("LineMonitorDevice", "line_monitor"),
+    ("MonitorHostDevice", "monitor_host"),
+    ("OperatorStationDevice", "operator_station"),
+    ("DataServerDevice", "data_server"),
+    ("TimeSyncDevice", "time_sync"),
+    ("TimeSyncDevice", "fake_time_sync"),
+    ("BreakerIntelligentTerminal", "breaker_it"),
+    ("MechanicalSensor", "mechanical_sensor"),
+    ("LineMergingUnit", "line_mu"),
+]
+
+for cls_name, dev_id in DEVICE_CONFIGS:
+    setup_device_logger(cls_name, dev_id)
 
 _stop_event = threading.Event()
 _pause_event = threading.Event()

@@ -1,3 +1,5 @@
+import logging
+
 from base.base_station_device import BaseStationDevice
 from common.message import Message, MsgType, AppProtocol, TransportMedium
 
@@ -17,7 +19,11 @@ class OperatorStationDevice(BaseStationDevice):
 		:param target_process_device: 目标过程层设备ID (如 "breaker_it")
 		:param action: 操作动作 (如 "close" 合闸, "open" 分闸)
 		"""
-		self.logger.info(f"操作员发起手动指令: 转发给 [{target_bay_device}] 对 [{target_process_device}] 执行 [{action}] 操作")
+		self.audit_log("CONTROL", "MANUAL_COMMAND_INIT", details={
+			"target_bay": target_bay_device,
+			"target_process": target_process_device,
+			"action": action
+		}, level=logging.INFO)
 
 		# 将指令发送给同层的监控主机 (IEC 61850 MMS / WiFi6)
 		# 监控主机收到后会透传给对应的间隔层设备

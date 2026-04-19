@@ -19,7 +19,7 @@
   - 无线授时系统
   - 数据服务器
 """
-
+import logging
 from collections import deque
 from typing import Any, Deque, Dict, List
 
@@ -105,12 +105,11 @@ class BaseStationDevice(BaseDevice):
         # 历史队列: { sender_id: deque([payload, ...]) }
         self._data_store:  Dict[str, Deque[Any]] = {}
 
-        self.logger.info(
-            f"[站控层] 初始化完成 | "
-            f"间隔层←{self.bay_layer_ids} | "
-            f"同层↔{self.peer_ids} | "
-            f"过程层(跨层)→{self.process_layer_ids}"
-        )
+        self.audit_log("SYSTEM", "STARTUP", details={
+            "bay_layer": self.bay_layer_ids,
+            "peer": self.peer_ids,
+            "process_layer_cross": self.process_layer_ids
+        })
 
     # ════════════════════════════════════════════
     #  消息路由
@@ -128,12 +127,14 @@ class BaseStationDevice(BaseDevice):
         """
         # ── 时间同步: 自动更新本地时钟 ──
         if msg.msg_type == MsgType.SYNC:
-            ts = (
-                msg.payload.get("timestamp", msg.timestamp)
-                if isinstance(msg.payload, dict)
-                else msg.timestamp
-            )
-            self.sync_time(ts)
+            if msg.sender_id not in self.peer_ids and msg.sender_id not in self.process_layer_ids:
+                self.audit_log("SECURITY", "SYNC_SPOOFING_DETECTED", msg=msg, details={
+                    "reason": "SYNC message from unauthorized source"
+                }, level=logging.CRITICAL)
+            else:
+                ts = msg.payload.get("timestamp", msg.timestamp) if isinstance(msg.payload, dict) else msg.timestamp
+                self.sync_time(ts)
+                self.audit_log("TIME", "TIME_SYNCED", msg=msg, level=logging.DEBUG)
 
         # ── 按来源分发 ──
         sender = msg.sender_id
@@ -145,10 +146,9 @@ class BaseStationDevice(BaseDevice):
             self._on_peer_data(msg)
 
         else:
-            self.logger.warning(
-                f"收到未识别来源消息: sender={sender}, "
-                f"type={msg.msg_type}, protocol={msg.app_protocol}"
-            )
+            self.audit_log("SECURITY", "UNAUTHORIZED_SOURCE", msg=msg, details={
+                "reason": "Sender not found in valid topology"
+            }, level=logging.CRITICAL)
 
     # ══════════════════════════════════════════
     #  接收处理
@@ -165,10 +165,7 @@ class BaseStationDevice(BaseDevice):
         默认行为:
           记录日志 + 存入 _latest_data 和 _data_store
         """
-        self.logger.info(
-            f"[下行←] 间隔层数据 | from={msg.sender_id} "
-            f"type={msg.msg_type} protocol={msg.app_protocol} payload={msg.payload}"
-        )
+        self.audit_log("NETWORK", "RECEIVE_BAY", msg=msg, details={"payload": msg.payload})
         self._store_data(msg.sender_id, msg.payload)
         self.on_bay_data(msg)
 
@@ -184,11 +181,7 @@ class BaseStationDevice(BaseDevice):
         默认行为:
           记录日志 + 存入数据存储
         """
-        self.logger.info(
-            f"[同层←] | from={msg.sender_id} "
-            f"type={msg.msg_type} protocol={msg.app_protocol} "
-            f"medium={msg.transport_medium} payload={msg.payload}"
-        )
+        self.audit_log("NETWORK", "RECEIVE_PEER", msg=msg, details={"payload": msg.payload})
         self._store_data(msg.sender_id, msg.payload)
         self.on_peer_data(msg)
 
@@ -389,4 +382,4 @@ class BaseStationDevice(BaseDevice):
         """清空所有数据存储 (快照 + 历史)"""
         self._data_store.clear()
         self._latest_data.clear()
-        self.logger.debug("数据存储已清空")
+        self.audit_log("DATA", "STORE_CLEARED", level=logging.DEBUG)

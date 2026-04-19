@@ -9,6 +9,7 @@ base/base_sensor.py
 
 import csv
 import time
+import logging
 from abc import abstractmethod
 from typing import Any, Dict, List, Optional
 
@@ -81,11 +82,13 @@ class BaseSensor(BaseDevice):
         self._read_mode:  str  = "once"                # 读取模式
         self._data_loaded: bool = False                # 是否已加载数据
 
-        self.logger.info(
-            f"传感器初始化完成 | 上层邻居: {self._upstream_ids} "
-            f"| 协议: {self.app_protocol} | 介质: {self.transport_medium} "
-            f"| 采样周期: {self.sample_interval}s | 上报模式: {self.report_mode}"
-        )
+        self.audit_log("SYSTEM", "STARTUP", details={
+            "upstream": self._upstream_ids,
+            "app_protocol": self.app_protocol,
+            "transport_medium": self.transport_medium,
+            "sample_interval": self.sample_interval,
+            "report_mode": self.report_mode
+        })
 
     # ════════════════════════════════════════════
     #  新增: 文件数据源管理
@@ -130,9 +133,11 @@ class BaseSensor(BaseDevice):
         self._read_mode  = mode
         self._data_loaded = True
 
-        self.logger.info(
-            f"加载数据文件: {filepath} | 行数={len(self._data_rows)} | 模式={mode}"
-        )
+        self.audit_log("DATA", "LOAD_DATA_SOURCE", details={
+            "filepath": filepath,
+            "rows": len(self._data_rows),
+            "mode": mode
+        }, level=logging.INFO)
         return len(self._data_rows)
 
     def clear_data(self) -> None:
@@ -140,7 +145,7 @@ class BaseSensor(BaseDevice):
         self._data_rows   = []
         self._row_index   = 0
         self._data_loaded = False
-        self.logger.info("文件数据已清除, 恢复 simulate 模式")
+        self.audit_log("DATA", "CLEAR_DATA_SOURCE", details={"action": "revert_to_simulate"}, level=logging.INFO)
 
     def _next_row(self) -> Optional[Dict[str, str]]:
         """
@@ -225,7 +230,10 @@ class BaseSensor(BaseDevice):
         # 步骤 1: 采集
         raw_value = self.sample()
         if raw_value is None:
-            self.logger.warning("采样返回 None, 本轮跳过")
+            self.audit_log("DATA", "SAMPLE_FAILED", details={
+                "reason": "sample() returned None",
+                "impact": "Data stream interrupted"
+            }, level=logging.WARNING)
             return
 
         # 步骤 2: 判定触发类型
@@ -237,6 +245,11 @@ class BaseSensor(BaseDevice):
         # 步骤 4: 如果不需要上报则结束
         if trigger is None:
             return
+
+        if trigger == ReportTrigger.EVENT:
+            self.audit_log("DATA", "EVENT_TRIGGERED", details={
+                "new_value": raw_value
+            }, level=logging.DEBUG)
 
         # 步骤 5: 打包 + 上报
         payload = self.build_payload(raw_value, trigger)
@@ -275,9 +288,6 @@ class BaseSensor(BaseDevice):
             return ReportTrigger.EVENT if changed else ReportTrigger.PERIODIC
 
         else:
-            self.logger.warning(
-                f"未知上报模式: {self.report_mode}, 按 periodic 处理"
-            )
             return ReportTrigger.PERIODIC
 
     def _detect_change(self, new_value: Any) -> bool:
@@ -392,7 +402,9 @@ class BaseSensor(BaseDevice):
         payload : dict  build_payload() 构造的标准载荷
         """
         if not self._upstream_ids:
-            self.logger.warning("未发现上层邻居, 数据无法上报")
+            self.audit_log("NETWORK", "ISOLATED_SENSOR", details={
+                "reason": "No upstream neighbors found"
+            }, level=logging.WARNING)
             return
 
         for target_id in self._upstream_ids:
@@ -407,7 +419,8 @@ class BaseSensor(BaseDevice):
             )
             success = self.send(msg)
             if not success:
-                self.logger.warning(f"上报失败: [{target_id}] 不可达")
+                self.audit_log("NETWORK", "SEND_FAILED", details={"target": target_id}, level=logging.WARNING)
+
 
     # ════════════════════════════════════════════
     #  消息接收
@@ -423,9 +436,10 @@ class BaseSensor(BaseDevice):
         if msg.msg_type == MsgType.SYNC:
             self._handle_time_sync(msg)
         else:
-            self.logger.debug(
-                f"收到非关注消息: type={msg.msg_type} from={msg.sender_id}"
-            )
+            self.audit_log("SECURITY", "ILLEGAL_SENSOR_ACCESS", msg=msg, details={
+                "impact": "Direct probing or control packet sent to physical layer leaf node",
+                "action": "Dropped"
+            }, level=logging.CRITICAL)
 
     def _handle_time_sync(self, msg: Message) -> None:
         """
@@ -440,9 +454,9 @@ class BaseSensor(BaseDevice):
         ts = msg.payload.get("sync_time") if isinstance(msg.payload, dict) else None
         if ts is not None:
             self.sync_time(ts)
-            self.logger.info(f"时间同步 from [{msg.sender_id}]: {ts}")
+            self.audit_log("TIME", "TIME_SYNCED", msg=msg, details={"sync_timestamp": ts}, level=logging.DEBUG)
         else:
-            self.logger.warning(f"时间同步载荷格式异常: {msg.payload}")
+            self.audit_log("TIME", "INVALID_SYNC_PAYLOAD", msg=msg, level=logging.WARNING)
 
     # ════════════════════════════════════════════
     #  抽象方法 —— 子类必须实现

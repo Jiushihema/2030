@@ -7,7 +7,7 @@ device_bay/line_monitor.py
 仅当窗口已满且窗口统计量连续 OVERVOLTAGE_PERSIST_COUNT 次高于阈值时才跳闸，
 避免单点尖峰误动；与演示侧持续过压注入等 SV 流共用同一判据。
 """
-
+import logging
 import math
 import time
 import threading
@@ -106,18 +106,21 @@ class LineMonitorDevice(BaseBayDevice):
                 if self._reclose_timer is not None:
                     self._reclose_timer.cancel()
                     self._reclose_timer = None
-                self.logger.warning(
-                    "已达第 %d 次过压跳闸，已禁止自动重合闸",
-                    self._overvoltage_trip_count,
-                )
-            label = "RMS" if self.USE_RMS_VOLTAGE_WINDOW else "均值"
-            self.logger.warning(
-                "线路过压，执行本地紧急切除！%s=%.3fkV (瞬时=%.3fkV, 窗=%d)",
-                label,
-                window_stat,
-                voltage,
-                self.SV_VOLTAGE_WINDOW_SIZE,
-            )
+                self.audit_log("CONTROL", "PROTECTION_LOCKOUT", details={
+                    "trip_count": self._overvoltage_trip_count,
+                    "reason": "max_overvoltage_trips_reached"
+                }, level=logging.WARNING)
+
+            stat_label = "RMS" if self.USE_RMS_VOLTAGE_WINDOW else "MEAN"
+            self.audit_log("CONTROL", "PROTECTION_TRIP", details={
+                "reason": "line_overvoltage",
+                "stat_type": stat_label,
+                "window_stat": window_stat,
+                "raw_voltage": voltage,
+                "window_size": self.SV_VOLTAGE_WINDOW_SIZE,
+                "persist_ticks": self._overvoltage_persistent_ticks
+            }, level=logging.WARNING)
+
             self.command_to_process(
                 receiver_id="breaker_it",
                 payload={"action": "trip", "reason": "line_overvoltage"},
@@ -144,7 +147,7 @@ class LineMonitorDevice(BaseBayDevice):
             if normal:
                 if self._protection_locked:
                     self._protection_locked = False
-                    self.logger.info("保护闭锁解除")
+                    self.audit_log("CONTROL", "PROTECTION_UNLOCKED", level=logging.INFO)
             self.report_to_station(
                 receiver_id="monitor_host",
                 payload={"line_voltage": voltage, "line_current": current},
@@ -164,19 +167,24 @@ class LineMonitorDevice(BaseBayDevice):
                 self._overvoltage_persistent_ticks = 0
                 self._last_window_stat = None
                 if not self._auto_reclose_enabled:
-                    self.logger.warning(
-                        "过压跳闸次数已达闭锁阈值，不再启动重合闸计时器（需人工合闸或系统重置）"
-                    )
+                    self.audit_log("CONTROL", "RECLOSE_DISABLED", details={
+                        "reason": "lockout_threshold_reached"
+                    }, level=logging.WARNING)
                 else:
-                    self.logger.info("分闸成功，启动重合闸计时器")
+                    self.audit_log("CONTROL", "BREAKER_TRIP_SUCCESS", msg=msg, details={
+                        "action": "open",
+                        "next_step": "schedule_reclose"
+                    }, level=logging.INFO)
                     self._reclose_armed = True
                     self._schedule_reclose()
             elif not result.get("success"):
                 # 分闸失败（可能传感器被篡改导致拒绝执行）
-                self.logger.warning(
-                    f"分闸指令被拒绝：{result.get('error')}  "
-                    f"【警告】线路持续带故障运行！"
-                )
+                self.audit_log("SECURITY", "BREAKER_TRIP_REJECTED", msg=msg, details={
+                    "error": result.get("error"),
+                    "breaker_state": result.get("state"),
+                    "impact": "line_remains_faulty"
+                }, level=logging.CRITICAL)
+
                 self.report_to_station(
                     receiver_id="monitor_host",
                     payload={
@@ -212,7 +220,10 @@ class LineMonitorDevice(BaseBayDevice):
         self._reclose_timer = threading.Timer(self.RECLOSE_DELAY, self._attempt_reclose)
         self._reclose_timer.daemon = True
         self._reclose_timer.start()
-        self.logger.info(f"重合闸计时器已启动，{self.RECLOSE_DELAY}s 后尝试合闸")
+
+        self.audit_log("CONTROL", "RECLOSE_SCHEDULED", details={
+            "delay_seconds": self.RECLOSE_DELAY
+        }, level=logging.INFO)
 
     def _attempt_reclose(self) -> None:
         if not self._reclose_armed:
@@ -225,9 +236,12 @@ class LineMonitorDevice(BaseBayDevice):
             else self._last_voltage
         )
         if v_chk > self.OVERVOLTAGE_THRESHOLD:
-            self.logger.warning(
-                f"重合闸放弃：线路仍然异常 判据电压={v_chk:.3f}kV"
-            )
+            self.audit_log("CONTROL", "RECLOSE_ABORTED", details={
+                "reason": "permanent_fault",
+                "voltage_check": v_chk,
+                "threshold": self.OVERVOLTAGE_THRESHOLD
+            }, level=logging.WARNING)
+
             self.report_to_station(
                 receiver_id="monitor_host",
                 payload={
@@ -241,7 +255,7 @@ class LineMonitorDevice(BaseBayDevice):
             )
             return
 
-        self.logger.info("重合闸条件满足，发送合闸指令")
+        self.audit_log("CONTROL", "RECLOSE_CONDITION_MET", level=logging.INFO)
         self._send_close_command()
 
     def _send_close_command(self) -> None:
@@ -257,7 +271,10 @@ class LineMonitorDevice(BaseBayDevice):
                     timestamp=self.current_time or time.time(),
                 )
                 self.send(msg)
-                self.logger.info(f"重合闸指令已发送 → [{target_id}]")
+
+                self.audit_log("CONTROL", "RECLOSE_EXECUTE", details={
+                    "target": target_id
+                }, level=logging.INFO)
 
     # ════════════════════════════════════════════
     #  站控层指令处理
@@ -265,7 +282,11 @@ class LineMonitorDevice(BaseBayDevice):
 
     def on_station_command(self, msg: Message) -> None:
         if msg.sender_id == "monitor_host" and msg.msg_type == MsgType.CMD:
-            self.logger.info(f"收到监控主机下发的手动指令: {msg.payload}，转发至断路器")
+            self.audit_log("CONTROL", "FORWARD_MANUAL_CMD", msg=msg, details={
+                "target": "breaker_it",
+                "payload": msg.payload
+            }, level=logging.INFO)
+
             self.command_to_process(
                 receiver_id="breaker_it",
                 payload=msg.payload,

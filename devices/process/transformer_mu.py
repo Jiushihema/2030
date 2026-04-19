@@ -21,7 +21,7 @@ devices/process/transformer_mu.py
     4. 将 SV 帧发送至主变测控和主变保护装置
     5. 接收 PTP 时间同步并级联转发给下属传感器
 """
-
+import logging
 import math
 import threading
 import time
@@ -98,12 +98,12 @@ class TransformerMergingUnit(BaseProcessAggregator):
         # 最近一帧完整 SV 载荷 (wrap_payload 之后), 供调试 / 演示读取
         self.last_sample: Optional[Dict[str, Any]] = None
 
-        self.logger.info(
-            f"主变合并单元初始化完成 | svID={self._sv_id} "
-            f"| SV帧率={1.0/self.report_interval:.0f}Hz "
-            f"| 额定电流={self._rated_current}A "
-            f"| 额定电压={self._rated_voltage}V"
-        )
+        self.audit_log("SYSTEM", "STARTUP", details={
+            "sv_id": self._sv_id,
+            "sample_rate_hz": int(1.0 / self.report_interval) if self.report_interval > 0 else 0,
+            "rated_current": self._rated_current,
+            "rated_voltage": self._rated_voltage
+        }, level=logging.INFO)
 
     # ════════════════════════════════════════════
     #  状态属性 (只读)
@@ -131,7 +131,7 @@ class TransformerMergingUnit(BaseProcessAggregator):
     def start(self, stop_event: threading.Event = None) -> None:
         """启动周期性 SV 上报线程。"""
         if self._running:
-            self.logger.warning("SV 上报线程已在运行，忽略重复启动")
+            self.audit_log("SYSTEM", "THREAD_START_IGNORED", details={"reason": "Already running"}, level=logging.WARNING)
             return
         self._stop_event = stop_event
         self._running = True
@@ -141,10 +141,10 @@ class TransformerMergingUnit(BaseProcessAggregator):
             daemon=True,
         )
         self._thread.start()
-        self.logger.info(
-            f"主变合并单元 SV 线程已启动，间隔={self.report_interval}s "
-            f"({1.0 / self.report_interval:.0f}Hz)"
-        )
+        self.audit_log("SYSTEM", "SAMPLING_THREAD_STARTED", details={
+            "interval": self.report_interval,
+            "hz": int(1.0 / self.report_interval) if self.report_interval > 0 else 0
+        }, level=logging.INFO)
 
     def stop(self) -> None:
         """停止 SV 上报线程。"""
@@ -154,7 +154,7 @@ class TransformerMergingUnit(BaseProcessAggregator):
         if self._thread is not None:
             self._thread.join(timeout=2.0)
         self._thread = None
-        self.logger.info("主变合并单元 SV 线程已停止")
+        self.audit_log("SYSTEM", "SAMPLING_THREAD_STOPPED", level=logging.INFO)
 
     def _loop(self) -> None:
         while self._running:
@@ -180,7 +180,7 @@ class TransformerMergingUnit(BaseProcessAggregator):
             )
             success = self.send(msg)
             if not success:
-                self.logger.warning(f"上报失败: [{target_id}] 不可达")
+                self.audit_log("NETWORK", "REPORT_FAILED", details={"target": target_id}, level=logging.WARNING)
 
     # ════════════════════════════════════════════
     #  传感器数据处理 (BaseProcessAggregator 要求实现)
@@ -200,9 +200,9 @@ class TransformerMergingUnit(BaseProcessAggregator):
         msg : Message  来自电流或电压传感器的数据消息
         """
         if msg.sender_id not in self._downstream_ids:
-            self.logger.debug(
-                f"忽略非下属传感器数据: sender={msg.sender_id}"
-            )
+            self.audit_log("SECURITY", "UNEXPECTED_SENSOR_DATA", msg=msg, details={
+                "reason": "Sender not in downstream topology"
+            }, level=logging.WARNING)
             return
 
         # 更新缓存
@@ -211,9 +211,9 @@ class TransformerMergingUnit(BaseProcessAggregator):
         # 更新质量标志
         self._update_quality(msg.sender_id)
 
-        self.logger.debug(
-            f"采样数据缓存更新: [{msg.sender_id}]"
-        )
+        # self.logger.debug(
+        #     f"采样数据缓存更新: [{msg.sender_id}]"
+        # )
 
     def _update_quality(self, sensor_id: str) -> None:
         """
@@ -223,10 +223,12 @@ class TransformerMergingUnit(BaseProcessAggregator):
         ----------
         sensor_id : str  传感器 ID
         """
-        if "current" in sensor_id:
+        if "current" in sensor_id and self._quality_flags["current"] != "good":
             self._quality_flags["current"] = "good"
-        elif "voltage" in sensor_id:
+            self.audit_log("DATA", "SENSOR_QUALITY_RESTORED", details={"sensor": "current"}, level=logging.INFO)
+        elif "voltage" in sensor_id and self._quality_flags["voltage"] != "good":
             self._quality_flags["voltage"] = "good"
+            self.audit_log("DATA", "SENSOR_QUALITY_RESTORED", details={"sensor": "voltage"}, level=logging.INFO)
 
     # ════════════════════════════════════════════
     #  数据汇聚 (BaseProcessAggregator 要求实现)
@@ -272,10 +274,18 @@ class TransformerMergingUnit(BaseProcessAggregator):
             return None
 
         # 标记缺失数据的质量标志
-        if not current_value:
+        if not current_value and self._quality_flags["current"] != "invalid":
             self._quality_flags["current"] = "invalid"
-        if not voltage_value:
+            self.audit_log("SECURITY", "SENSOR_DATA_LOSS", details={
+                "sensor": "current_sensor",
+                "impact": "SV_quality_degraded_to_invalid"
+            }, level=logging.CRITICAL)
+        if not voltage_value and self._quality_flags["voltage"] != "invalid":
             self._quality_flags["voltage"] = "invalid"
+            self.audit_log("SECURITY", "SENSOR_DATA_LOSS", details={
+                "sensor": "voltage_sensor",
+                "impact": "SV_quality_degraded_to_invalid"
+            }, level=logging.CRITICAL)
 
         return {
             # 三相电流
@@ -352,9 +362,10 @@ class TransformerMergingUnit(BaseProcessAggregator):
         -------
         dict  固定返回不支持
         """
-        self.logger.warning(
-            f"主变合并单元不支持控制指令: {cmd_payload}"
-        )
+        self.audit_log("SECURITY", "UNAUTHORIZED_COMMAND_TO_MU", details={
+            "payload": cmd_payload,
+            "reason": "Transformer Merging Unit does not support control commands"
+        }, level=logging.WARNING)
         return {
             "success":   False,
             "error":     "主变合并单元不支持控制指令, 请发送至断路器智能终端",
@@ -404,22 +415,22 @@ class TransformerMergingUnit(BaseProcessAggregator):
         """
         if not self._latest_cache:
             if not self._logged_empty_cache:
-                self.logger.debug("缓存为空, SV 上报跳过（等待电流/电压传感器数据）")
+                self.audit_log("DATA", "CACHE_EMPTY", details={"reason": "Waiting for sensor data"}, level=logging.DEBUG)
                 self._logged_empty_cache = True
             return
 
         self._logged_empty_cache = False
 
-        missing = [
-            sid for sid in self._downstream_ids
-            if sid not in self._latest_cache
-        ]
-        if missing and self._report_count < 5:
-            self.logger.debug(f"以下传感器尚无缓存数据: {missing}")
+        # missing = [
+        #     sid for sid in self._downstream_ids
+        #     if sid not in self._latest_cache
+        # ]
+        # if missing and self._report_count < 5:
+        #     self.logger.debug(f"以下传感器尚无缓存数据: {missing}")
 
         aggregated = self.aggregate(dict(self._latest_cache))
         if aggregated is None:
-            self.logger.debug("aggregate() 返回 None, 跳过本轮上报")
+            # self.logger.debug("aggregate() 返回 None, 跳过本轮上报")
             return
 
         self.report_to_upstream(aggregated)
@@ -427,8 +438,10 @@ class TransformerMergingUnit(BaseProcessAggregator):
 
         samples_per_second = int(1.0 / self.report_interval)
         if self._total_sv_frames % samples_per_second == 0:
-            self.logger.info(
-                f"SV 帧统计: 总帧数={self._total_sv_frames}, "
-                f"采样序号={self._sample_counter}, "
-                f"同步状态={'已同步' if self.current_time else '未同步'}"
-            )
+            self.audit_log("SYSTEM", "SV_STATS_SUMMARY", details={
+                "total_frames": self._total_sv_frames,
+                "smpCnt": self._sample_counter,
+                "smpSynch": self.current_time is not None,
+                "quality_current": self._quality_flags["current"],
+                "quality_voltage": self._quality_flags["voltage"]
+            }, level=logging.INFO)

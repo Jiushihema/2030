@@ -1,3 +1,5 @@
+import logging
+
 from base.base_station_device import BaseStationDevice
 from common.message import Message, MsgType, AppProtocol
 
@@ -22,10 +24,11 @@ class DataServerDevice(BaseStationDevice):
 			data_type = msg.payload.get("data_type", "unknown")
 			content = msg.payload.get("content", {})
 
-			self.logger.info(
-				f"【入库成功】收到监控主机同步数据 | "
-				f"原始来源: {original_source} | 类型: {data_type} | 内容: {content}"
-			)
+			self.audit_log("DATA", "SAVE_TO_DB", msg=msg, details={
+				"original_source": original_source,
+				"data_type": data_type,
+				"content": content
+			})
 
 			# 模拟写入数据库耗时或逻辑
 			self._save_to_database(original_source, data_type, content)
@@ -35,4 +38,6 @@ class DataServerDevice(BaseStationDevice):
 		模拟数据落盘
 		"""
 		# 实际开发中这里会是 SQL 插入或时序数据库写入操作
-		self.logger.debug(f"--> 数据已持久化至本地时序数据库: {source}_{data_type}")
+		self.audit_log("DATA", "DB_PERSISTED", details={
+			"table": f"{source}_{data_type}"
+		}, level=logging.DEBUG)

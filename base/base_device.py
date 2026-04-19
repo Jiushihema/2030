@@ -5,12 +5,13 @@
 
 所有具体基类（BaseSensor、BaseIntelligentTerminal 等）都继承自此类
 """
-
+import json
 import logging
 from abc import ABC
+from typing import Any
+
 from common.message import Message, MsgType
 from common.bus import MessageBus, global_bus
-
 
 class BaseDevice(ABC):
 
@@ -39,7 +40,85 @@ class BaseDevice(ABC):
 
         # 自动注册到总线，绑定 on_message 为消息处理入口
         self.bus.register(self.device_id, self.on_message)
-        self.logger.info(f"设备初始化: {self.device_name}")
+        self.logger.debug(f"设备初始化: {self.device_name}")
+
+    # ──────────────────────────────────────────
+    # 日志记录
+    # ──────────────────────────────────────────
+
+    def audit_log(
+            self,
+            category: str,
+            action: str,
+            msg: Message = None,
+            details: dict = None,
+            level: int = logging.INFO
+    ) -> None:
+        """
+        结构化安全审计日志输出
+        :param category: 事件大类 (NETWORK, CONTROL, DATA, TIME, SECURITY, SYSTEM, ATTACK)
+        :param action: 具体动作 (SEND, RECV, ALERT, EXEC, SYNC 等)
+        :param msg: 关联的 Message 对象
+        :param details: 补充的业务/异常上下文细节
+        :param level: 日志级别 (logging.INFO/WARNING/CRITICAL)
+        """
+        log_record = {
+            "timestamp": self.current_time,
+            "device_id": self.device_id,
+            "layer": self.__class__.__bases__[0].__name__,  # 提取直接基类名
+            "category": category,
+            "action": action,
+        }
+        if msg:
+            log_record.update({
+                "msg_id": getattr(msg, "msg_id", "unknown"),
+                "sender": msg.sender_id,
+                "receiver": getattr(msg, "receiver_id", "broadcast"),
+                "msg_type": msg.msg_type,
+                # "protocol": getattr(msg, "app_protocol", "unknown"),
+                # "medium": getattr(msg, "transport_medium", "unknown"),
+            })
+        if details:
+            # if "payload" in details:
+            #     # 将原始 payload 替换为摘要
+            #     details["payload_summary"] = self._extract_payload_summary(details.pop("payload"))
+
+            log_record["details"] = details
+        # 确保中文和格式正确输出
+        self.logger.log(level, json.dumps(log_record, ensure_ascii=False))
+
+    CRITICAL_PAYLOAD_KEYS = {
+        "action", "position", "target", "reason", "state",
+        "result", "error", "source", "cmd_time"
+    }
+
+    def _extract_payload_summary(self, payload: Any) -> Any:
+        """智能提取 payload 中的关键控制参数，抛弃冗余数据"""
+        if not payload:
+            return None
+
+        if isinstance(payload, dict):
+            # 提取交集字段
+            summary = {k: v for k, v in payload.items() if k in self.CRITICAL_PAYLOAD_KEYS}
+
+            # 如果 payload 很大，但没有命中关键字，给出一个类型和大小摘要
+            if not summary and len(payload) > 3:
+                return f"<Dict with {len(payload)} keys, e.g., {list(payload.keys())[:2]}>"
+
+            # 如果存在未提取的字段，加一个标记，提示分析人员原包更大
+            if len(summary) < len(payload):
+                summary["_truncated"] = True
+
+            return summary if summary else payload
+
+        elif isinstance(payload, list):
+            return f"<List with {len(payload)} items>"
+
+        elif isinstance(payload, (str, bytes)):
+            # 字符串截断，防止缓冲区溢出攻击载荷打崩日志系统
+            return payload[:100] + "..." if len(payload) > 100 else payload
+
+        return payload
 
     # ──────────────────────────────────────────
     # 消息收发（走总线）
@@ -50,10 +129,7 @@ class BaseDevice(ABC):
         通过总线单播发送消息
         返回 True/False 表示投递是否成功
         """
-        self.logger.info(
-            f"发送 -> {msg.receiver_id} | 协议={msg.app_protocol} "
-            f"| 介质={msg.transport_medium} | 类型={msg.msg_type}"
-        )
+        self.audit_log("NETWORK", "SEND", msg=msg, details={"payload": msg.payload})
         return self.bus.send(msg)
 
     def broadcast(self, msg: Message) -> None:
@@ -80,9 +156,10 @@ class BaseDevice(ABC):
         子类应重写此方法以实现业务逻辑
         默认实现仅记录一条 debug 日志，不强制重写
         """
-        self.logger.debug(
-            f"收到消息: {msg.msg_type} from {msg.sender_id}"
-        )
+        self.audit_log("CONTROL", "FORWARD_MANUAL_CMD", msg=msg, details={
+            "target": "breaker_it",
+            "payload": msg.payload
+        }, level=logging.INFO)
 
     # ──────────────────────────────────────────
     # 时间同步
@@ -91,7 +168,7 @@ class BaseDevice(ABC):
     def sync_time(self, timestamp: float) -> None:
         """接收时间同步信号，更新本地时间"""
         self.current_time = timestamp
-        self.logger.info(f"时间同步: {timestamp}")
+        self.audit_log("TIME", "TIME_SYNC", details={"new_time": timestamp})
 
     # ──────────────────────────────────────────
     # 生命周期
@@ -103,7 +180,7 @@ class BaseDevice(ABC):
         仿真结束或设备故障时调用
         """
         self.bus.unregister(self.device_id)
-        self.logger.info(f"设备下线: {self.device_name}")
+        self.audit_log("SYSTEM", "SHUTDOWN", level=logging.WARNING)
 
     # ──────────────────────────────────────────
     # 设备信息

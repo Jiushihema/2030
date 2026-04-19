@@ -13,7 +13,7 @@ base/base_process.py
   - 接收时间同步信号并级联转发给下属传感器
 
 """
-
+import logging
 import time
 from abc import abstractmethod
 from typing import Any, Dict, List, Optional
@@ -108,15 +108,15 @@ class BaseProcessAggregator(BaseDevice):
         # ── SV 采样序号计数器 (合并单元使用, 智能终端可忽略) ──
         self._sample_counter: int = 0
 
-        self.logger.info(
-            f"汇聚节点初始化完成 "
-            f"| 协议: {self.app_protocol} | 介质: {self.transport_medium} "
-            f"| 上报周期: {self.report_interval}s "
-            f"| 上报消息类型: {self.report_msg_type} "
-            f"| 上层(间隔层): {self._upstream_ids} "
-            f"| 下层(传感器): {self._downstream_ids} "
-            f"| 授时源: {self._time_sync_sources}"
-        )
+        self.audit_log("SYSTEM", "STARTUP", details={
+            "app_protocol": self.app_protocol,
+            "transport_medium": self.transport_medium,
+            "report_interval": self.report_interval,
+            "report_msg_type": self.report_msg_type,
+            "upstream": self._upstream_ids,
+            "downstream": self._downstream_ids,
+            "time_sync_sources": self._time_sync_sources
+        })
 
     # ════════════════════════════════════════════
     #  邻居访问属性
@@ -162,9 +162,9 @@ class BaseProcessAggregator(BaseDevice):
         elif msg.msg_type == MsgType.SYNC:
             self._handle_time_sync(msg)
         else:
-            self.logger.debug(
-                f"收到未处理消息: type={msg.msg_type} from={msg.sender_id}"
-            )
+            self.audit_log("SECURITY", "UNHANDLED_MESSAGE", msg=msg, details={
+                "reason": "Unsupported message type in Process layer"
+            }, level=logging.WARNING)
 
 
 
@@ -195,16 +195,21 @@ class BaseProcessAggregator(BaseDevice):
               {"action": "close", "target": "breaker_it", "params": {}}
         """
         if not self.should_accept_command(msg):
-            self.logger.warning(
-                f"拒绝控制指令: sender={msg.sender_id} 未通过校验"
-            )
+            self.audit_log("SECURITY", "UNAUTHORIZED_COMMAND_INJECTION", msg=msg, details={
+                "reason": "Command source not verified by logic (bypass detected)",
+                "action": "Command execution blocked"
+            }, level=logging.CRITICAL)
             return
 
-        self.logger.info(
-            f"收到控制指令: from=[{msg.sender_id}] payload={msg.payload}"
-        )
+        self.audit_log("CONTROL", "COMMAND_RECEIVED", msg=msg, details={
+            "payload": msg.payload
+        }, level=logging.INFO)
 
         result = self.execute_command(msg.payload)
+
+        self.audit_log("CONTROL", "COMMAND_EXECUTED", msg=msg, details={
+            "result": result
+        }, level=logging.INFO)
 
         ack_msg = Message(
             sender_id=self.device_id,
@@ -245,15 +250,15 @@ class BaseProcessAggregator(BaseDevice):
         ts = (msg.payload.get("timestamp")
               if isinstance(msg.payload, dict) else None)
         if ts is None:
-            self.logger.warning(f"时间同步载荷格式异常: {msg.payload}")
+            self.audit_log("TIME", "INVALID_SYNC_PAYLOAD", msg=msg, level=logging.WARNING)
             return
 
         # 更新自身时钟
         self.sync_time(ts)
-        self.logger.info(f"时间同步 from [{msg.sender_id}]: {ts}")
-        # self.logger.critical(f"时间同步 from [{msg.sender_id}]: {ts}")
+        self.audit_log("TIME", "TIME_SYNCED", msg=msg, details={"sync_timestamp": ts}, level=logging.INFO)
 
         # 级联转发给所有下属传感器
+        success_count = 0
         for sensor_id in self._downstream_ids:
             sync_msg = Message(
                 sender_id=self.device_id,
@@ -264,15 +269,17 @@ class BaseProcessAggregator(BaseDevice):
                 payload={"sync_time": ts},
                 timestamp=ts,
             )
-            success = self.send(sync_msg)
-            if not success:
-                self.logger.warning(
-                    f"时间同步转发失败: [{sensor_id}] 不可达"
-                )
+            if self.send(sync_msg):
+                success_count += 1
+            else:
+                self.audit_log("NETWORK", "TIME_SYNC_FORWARD_FAILED", details={
+                    "target": sensor_id
+                }, level=logging.WARNING)
 
-        self.logger.info(
-            f"时间同步已级联转发给 {len(self._downstream_ids)} 个传感器"
-        )
+        self.audit_log("TIME", "TIME_SYNC_CASCADED", details={
+            "target_count": success_count,
+            "total_downstream": len(self._downstream_ids)
+        }, level=logging.DEBUG)
 
     # ════════════════════════════════════════════
     #  抽象方法 —— 子类必须实现
@@ -460,7 +467,7 @@ class BaseProcessAggregator(BaseDevice):
         payload   : dict  传感器上报的载荷字典
         """
         self._latest_cache[sensor_id] = payload
-        self.logger.debug(f"缓存更新: [{sensor_id}]")
+        self.audit_log("DATA", "CACHE_UPDATE", details={"sensor": sensor_id}, level=logging.DEBUG)
 
     def report_to_upstream(self, payload: Dict[str, Any]) -> None:
         """
@@ -492,7 +499,7 @@ class BaseProcessAggregator(BaseDevice):
             )
             success = self.send(msg)
             if not success:
-                self.logger.warning(f"上报失败: [{target_id}] 不可达")
+                self.audit_log("NETWORK", "REPORT_FAILED", details={"target": target_id}, level=logging.WARNING)
 
     def forward_event(self, msg: Message, msg_type: str) -> None:
         """
@@ -524,6 +531,10 @@ class BaseProcessAggregator(BaseDevice):
             "data":          msg.payload,
         }
 
+        self.audit_log("DATA", "EVENT_FORWARD_START", msg=msg, details={
+            "target_layer": "upstream", "targets": self._upstream_ids
+        }, level=logging.INFO)
+
         for target_id in self._upstream_ids:
             event_msg = Message(
                 sender_id=self.device_id,
@@ -536,12 +547,7 @@ class BaseProcessAggregator(BaseDevice):
             )
             success = self.send(event_msg)
             if not success:
-                self.logger.warning(f"事件转发失败: [{target_id}] 不可达")
-
-        self.logger.info(
-            f"事件即时转发: [{msg.sender_id}] → {self._upstream_ids} "
-            f"(msg_type={msg_type})"
-        )
+                self.audit_log("NETWORK", "EVENT_FORWARD_FAILED", details={"target": target_id}, level=logging.WARNING)
 
     def periodic_report(self) -> None:
         """
@@ -556,7 +562,6 @@ class BaseProcessAggregator(BaseDevice):
         子类如果需要完全自定义周期上报逻辑, 可重写此方法。
         """
         if not self._latest_cache:
-            self.logger.debug("缓存为空, 跳过周期性上报")
             return
 
         # 记录哪些下属传感器尚无缓存数据, 方便调试
@@ -565,13 +570,15 @@ class BaseProcessAggregator(BaseDevice):
             if sid not in self._latest_cache
         ]
         if missing and self._report_count < 5:
-            self.logger.debug(f"以下传感器尚无缓存数据: {missing}")
+            self.audit_log("DATA", "MISSING_SENSOR_DATA", details={"missing_sensors": missing}, level=logging.DEBUG)
 
         aggregated = self.aggregate(dict(self._latest_cache))
         if aggregated is None:
-            self.logger.warning("aggregate() 返回 None, 跳过本轮上报")
             return
 
         self.report_to_upstream(aggregated)
         self._report_count += 1
-        self.logger.info(f"周期性上报完成 → {self._upstream_ids}")
+
+        self.audit_log("DATA", "PERIODIC_REPORT_DONE", details={
+            "report_count": self._report_count
+        }, level=logging.DEBUG)

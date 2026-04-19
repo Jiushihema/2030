@@ -17,7 +17,7 @@ devices/sensors/mechanical_sensor.py
         "spring_charged":  bool,   # 弹簧是否已储能
     }
 """
-
+import logging
 import random
 import threading
 import time
@@ -83,10 +83,10 @@ class MechanicalSensor(BaseSensor):
         self._running: bool = False
         self._thread:  threading.Thread = None
 
-        self.logger.info(
-            f"机械状态传感器初始化: 位置={self._position}, "
-            f"采样周期={self.sample_interval}s"
-        )
+        self.audit_log("SYSTEM", "STARTUP", details={
+            "initial_position": self._position,
+            "sample_interval": self.sample_interval
+        }, level=logging.INFO)
 
     # ════════════════════════════════════════════
     #  状态属性 (只读)
@@ -111,7 +111,7 @@ class MechanicalSensor(BaseSensor):
     def start(self) -> None:
         """启动后台周期采样线程。"""
         if self._running:
-            self.logger.warning("周期采样线程已在运行，忽略重复启动")
+            # self.logger.warning("周期采样线程已在运行，忽略重复启动")
             return
 
         self._running = True
@@ -121,7 +121,7 @@ class MechanicalSensor(BaseSensor):
             daemon=True,
         )
         self._thread.start()
-        self.logger.info(f"周期采样启动，间隔={self.sample_interval}s")
+        self.audit_log("SYSTEM", "SAMPLING_THREAD_START", details={"interval": self.sample_interval})
 
     def stop(self) -> None:
         """停止后台周期采样线程，等待线程退出。"""
@@ -130,7 +130,7 @@ class MechanicalSensor(BaseSensor):
         self._running = False
         if self._thread is not None:
             self._thread.join(timeout=self.sample_interval * 3)
-        self.logger.info("周期采样已停止")
+        self.audit_log("SYSTEM", "SAMPLING_THREAD_STOP")
 
     def _loop(self) -> None:
         """后台线程主体：周期性调用标准采集上报流程。"""
@@ -166,11 +166,17 @@ class MechanicalSensor(BaseSensor):
         if msg.msg_type == MsgType.SYNC:
             self._handle_time_sync(msg)
         elif msg.msg_type == MsgType.CMD:
+            if msg.sender_id not in self.upstream_ids:
+                self.audit_log("SECURITY", "ILLEGAL_SENSOR_TAMPERING", msg=msg, details={
+                    "impact": "Unauthorized attempt to tamper with physical sensor state via bypass command",
+                    "action": "Command Dropped"
+                }, level=logging.CRITICAL)
+                return
             self._handle_command(msg)
         else:
-            self.logger.debug(
-                f"收到非关注消息: type={msg.msg_type} from={msg.sender_id}"
-            )
+            self.audit_log("SECURITY", "ILLEGAL_SENSOR_ACCESS", msg=msg, details={
+                "action": "Message Dropped"
+            }, level=logging.CRITICAL)
 
     def _handle_command(self, msg: Message) -> None:
         """
@@ -183,7 +189,7 @@ class MechanicalSensor(BaseSensor):
         确保 breaker_it 下一次收到的周期状态与实际执行结果一致。
         """
         if not isinstance(msg.payload, dict):
-            self.logger.warning(f"CMD 载荷格式异常: {msg.payload}")
+            self.audit_log("CONTROL", "INVALID_COMMAND_FORMAT", msg=msg, level=logging.WARNING)
             return
 
         action = msg.payload.get("action")
@@ -191,14 +197,14 @@ class MechanicalSensor(BaseSensor):
         if action == "set_position":
             new_position = msg.payload.get("position")
             if not new_position:
-                self.logger.warning("set_position 指令缺少 position 字段")
+                # self.logger.warning("set_position 指令缺少 position 字段")
                 return
             try:
                 self.set_position(new_position)
             except ValueError as e:
-                self.logger.warning(f"set_position 执行失败: {e}")
+                self.audit_log("CONTROL", "SET_POSITION_FAILED", details={"error": str(e)}, level=logging.WARNING)
         else:
-            self.logger.debug(f"未知 CMD 指令: action={action}")
+            self.audit_log("CONTROL", "UNKNOWN_COMMAND", details={"action": action}, level=logging.DEBUG)
 
     def _handle_time_sync(self, msg: Message) -> None:
         """
@@ -207,9 +213,9 @@ class MechanicalSensor(BaseSensor):
         ts = msg.payload.get("sync_time") if isinstance(msg.payload, dict) else None
         if ts is not None:
             self.sync_time(ts)
-            self.logger.info(f"时间同步 from [{msg.sender_id}]: {ts}")
-        else:
-            self.logger.warning(f"时间同步载荷格式异常: {msg.payload}")
+            self.audit_log("TIME", "TIME_SYNCED", details={"sync_timestamp": ts}, level=logging.DEBUG)
+        # else:
+        #     self.logger.warning(f"时间同步载荷格式异常: {msg.payload}")
 
     # ════════════════════════════════════════════
     #  状态控制接口
@@ -231,7 +237,7 @@ class MechanicalSensor(BaseSensor):
 
         old_position = self._position
         if old_position == new_position:
-            self.logger.debug(f"位置未变化，仍为 {new_position}")
+            # self.logger.debug(f"位置未变化，仍为 {new_position}")
             return
 
         self._position = new_position
@@ -243,12 +249,13 @@ class MechanicalSensor(BaseSensor):
         else:
             self._travel_time_ms = 0.0
 
-        self.logger.info(
-            f"位置变化: {old_position} → {new_position} "
-            f"(累计操作: {self._operation_count}次, "
-            f"行程时间: {self._travel_time_ms}ms, "
-            f"弹簧储能: {self._spring_charged})"
-        )
+        self.audit_log("CONTROL", "PHYSICAL_STATE_CHANGED", details={
+            "old_position": old_position,
+            "new_position": new_position,
+            "operation_count": self._operation_count,
+            "travel_time_ms": self._travel_time_ms,
+            "spring_charged": self._spring_charged
+        }, level=logging.INFO)
 
         # 立即触发事件上报，绕过 _evaluate_trigger 直接指定 EVENT
         current_sample = self.sample()
@@ -260,7 +267,7 @@ class MechanicalSensor(BaseSensor):
     def charge_spring(self) -> None:
         """模拟弹簧储能完成（合闸后由外部在适当延时后调用）。"""
         self._spring_charged = True
-        self.logger.info("弹簧储能完成")
+        self.audit_log("CONTROL", "SPRING_CHARGED", level=logging.DEBUG)
 
     # ════════════════════════════════════════════
     #  便捷仿真接口
@@ -269,13 +276,13 @@ class MechanicalSensor(BaseSensor):
     def simulate_close(self) -> None:
         """模拟完整合闸过程: open → intermediate → closed"""
         if self._position != "open":
-            self.logger.warning(f"当前位置为 {self._position}，非 open 状态，合闸可能异常")
+            self.audit_log("CONTROL", "INVALID_SIMULATION_STATE", details={"expected": "open", "current": self._position}, level=logging.WARNING)
         self.set_position("intermediate")
         self.set_position("closed")
 
     def simulate_open(self) -> None:
         """模拟完整分闸过程: closed → intermediate → open"""
         if self._position != "closed":
-            self.logger.warning(f"当前位置为 {self._position}，非 closed 状态，分闸可能异常")
+            self.audit_log("CONTROL", "INVALID_SIMULATION_STATE", details={"expected": "closed", "current": self._position}, level=logging.WARNING)
         self.set_position("intermediate")
         self.set_position("open")

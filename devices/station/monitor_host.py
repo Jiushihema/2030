@@ -1,3 +1,5 @@
+import logging
+
 from base.base_station_device import BaseStationDevice
 from common.message import Message, MsgType, AppProtocol, TransportMedium
 
@@ -16,15 +18,16 @@ class MonitorHostDevice(BaseStationDevice):
 
 		# 如果时间差大于 2 秒，说明全站时钟可能遭到了欺骗或漂移
 		if abs(local_time - event_time) > 2.0:
-			self.logger.critical(
-				f"【安全告警】检测到严重的时钟失步！"
-				f"本地时间:{local_time:.2f}, 事件时间:{event_time:.2f} (来源:{msg.sender_id})"
-			)
+			self.audit_log("SECURITY", "TIME_DESYNC_DETECTED", msg=msg, details={
+				"local_time": local_time,
+				"event_time": event_time,
+				"diff": local_time - event_time
+			}, level=logging.CRITICAL)
 
 		if msg.msg_type == MsgType.PROTECTION:
-			self.logger.error(f"【展示】收到间隔层保护动作事件: {msg.payload}")
+			self.audit_log("CONTROL", "PROTECTION_DISPLAY", msg=msg, level=logging.WARNING)
 		elif msg.msg_type == MsgType.ALARM:
-			self.logger.warning(f"【展示】收到间隔层告警事件: {msg.payload}")
+			self.audit_log("DATA", "ALARM_DISPLAY", msg=msg, level=logging.WARNING)
 
 		# 将收到的数据同步至数据服务器 (IEC 61850 MMS / WiFi6)
 		self.send_to_peer(
@@ -42,14 +45,18 @@ class MonitorHostDevice(BaseStationDevice):
 		# 接收操作员站发来的手动操作指令 (IEC 61850 MMS / WiFi6)
 		if msg.sender_id == "operator_station" and msg.msg_type == MsgType.CMD:
 			target_bay_device = msg.payload.get("target_bay_device")
-			self.logger.info(f"收到操作员站手动指令，准备转发给间隔层设备 [{target_bay_device}]")
-			payload={
-				"action": msg.payload.get("action"),
+			action = msg.payload.get("action")
+
+			# 记录关键的控制指令下发链路
+			self.audit_log("CONTROL", "FORWARD_COMMAND", msg=msg, details={
+				"target_bay": target_bay_device,
+				"action": action
+			}, level=logging.INFO)
+			payload = {
+				"action": action,
 				"reason": msg.payload.get("source"),
 				"cmd_time": self.current_time
 			}
-
-			# 将操作员的手动指令下发给对应的间隔层设备 (IEC 61850 MMS / 有线)
 			self.command_to_bay(
 				receiver_id=target_bay_device,
 				payload=payload,

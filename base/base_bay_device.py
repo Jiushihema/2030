@@ -20,7 +20,8 @@
   - 10kV 线路测控
   - 10kV 线路保护
 """
-
+import logging
+import time
 from typing import Any, Dict, List
 
 from base.base_device import BaseDevice
@@ -92,13 +93,14 @@ class BaseBayDevice(BaseDevice):
         # 按来源设备 ID 暂存最新一帧数据, 供子类汇聚 / 判断使用
         # { sender_id: latest_payload }
         self._data_buffer: Dict[str, Any] = {}
+        self._process_msg_counters: Dict[str, int] = {}
+        self._last_process_log_time: Dict[str, float] = {}
 
-        self.logger.info(
-            f"[间隔层] 初始化完成 | "
-            f"上行→{self.upstream_ids} | "
-            f"下行←{self.downstream_ids} | "
-            f"同层↔{self.peer_ids}"
-        )
+        self.audit_log("SYSTEM", "STARTUP", details={
+            "upstream": self.upstream_ids,
+            "downstream": self.downstream_ids,
+            "peer": self.peer_ids
+        })
 
     # ════════════════════════════════════════════
     #  消息路由
@@ -117,10 +119,19 @@ class BaseBayDevice(BaseDevice):
 
         extracted_time = msg.timestamp
 
+        if self.current_time is not None and extracted_time != self.current_time:
+            time_diff = extracted_time - self.current_time
+            # 如果一次时钟同步导致本地时间跳变超过 50ms，记录安全告警 (可能是延迟攻击或授时欺骗)
+            if abs(time_diff) > 5.00:
+                self.audit_log("SECURITY", "TIME_JUMP_DETECTED", msg=msg, details={
+                    "old_time": self.current_time,
+                    "new_time": extracted_time,
+                    "jump_delta": time_diff
+                }, level=logging.WARNING)
+
         # 更新本地时间
         if self.current_time != extracted_time:
             self.current_time = extracted_time
-            self.logger.debug(f"[{self.device_name}]时钟已跟随报文 [{msg.sender_id}] 同步至: {self.current_time}")
 
         # ── 按来源分发 ──
         sender = msg.sender_id
@@ -135,10 +146,9 @@ class BaseBayDevice(BaseDevice):
             self._on_peer_data(msg)
 
         else:
-            self.logger.warning(
-                f"收到未识别来源消息: sender={sender}, "
-                f"type={msg.msg_type}, protocol={msg.app_protocol}"
-            )
+            self.audit_log("SECURITY", "UNAUTHORIZED_SOURCE", msg=msg, details={
+                "reason": "Sender not found in valid topology (upstream/downstream/peer)"
+            }, level=logging.CRITICAL)
 
     # ══════════════════════════════════════════
     #  接收处理
@@ -147,19 +157,36 @@ class BaseBayDevice(BaseDevice):
     def _on_process_data(self, msg: Message) -> None:
         """
         处理过程层上送的数据 (下行接收)
-
-        典型数据:
-          - SV 采样值 (来自合并单元, IEC 61850-9-2 / 无线 Mesh)
-          - GOOSE 状态量 (来自智能终端, 超低时延射频)
-
-        默认行为:
-          记录日志 + 缓存到 _data_buffer[sender_id]
+        新增特性: 自我限流打桩机制，防止 4kHz 高频 SV 数据产生日志风暴。
+        每秒钟仅输出一次汇总日志，包含收包统计和最新载荷切片。
         """
-        self.logger.info(
-            f"[下行←] 过程层数据 | from={msg.sender_id} "
-            f"protocol={msg.app_protocol} medium={msg.transport_medium} payload={msg.payload}"
-        )
-        self._data_buffer[msg.sender_id] = msg.payload
+        import time
+
+        sender = msg.sender_id
+        # 使用仿真时间，若仿真时间未初始化则回退至系统真实时间
+        now = self.current_time
+        # 1. 限流器初始化
+        if sender not in self._last_process_log_time:
+            self._last_process_log_time[sender] = now
+            self._process_msg_counters[sender] = 0
+        # 2. 计数器累加
+        self._process_msg_counters[sender] += 1
+        # 3. 检查是否达到 1 秒的打桩周期
+        time_diff = now - self._last_process_log_time[sender]
+        if time_diff >= 1.0:
+            # 达到 1 秒，打印汇总日志
+            self.audit_log("NETWORK", "RECEIVE_PROCESS_SUMMARY", details={
+                "sender": sender,
+                "msg_type": msg.msg_type,
+                "app_protocol": getattr(msg, "app_protocol", "unknown"),
+                "packets_per_sec": self._process_msg_counters[sender],
+                "latest_payload_sample": str(msg.payload)[:200]  # 截断以防超大恶意报文
+            }, level=logging.DEBUG)  # 保持 DEBUG 级别，避免干扰上层重要告警
+            # 重置限流器状态
+            self._last_process_log_time[sender] = now
+            self._process_msg_counters[sender] = 0
+        # 4. 正常更新业务数据缓冲并触发子类回调 (不受限流影响，保护逻辑 4000 帧全量执行)
+        self._data_buffer[sender] = msg.payload
         self.on_process_data(msg)
 
     def _on_station_command(self, msg: Message) -> None:
@@ -172,10 +199,7 @@ class BaseBayDevice(BaseDevice):
         默认行为:
           仅记录日志
         """
-        self.logger.info(
-            f"[上行←] 站控层指令 | from={msg.sender_id} "
-            f"protocol={msg.app_protocol} payload={msg.payload}"
-        )
+        self.audit_log("NETWORK", "RECEIVE_STATION", msg=msg, details={"payload": msg.payload})
         self.on_station_command(msg)
 
     def _on_peer_data(self, msg: Message) -> None:
@@ -188,10 +212,7 @@ class BaseBayDevice(BaseDevice):
         默认行为:
           记录日志 + 缓存到 _data_buffer[sender_id]
         """
-        self.logger.info(
-            f"[同层←] | from={msg.sender_id} "
-            f"protocol={msg.app_protocol} medium={msg.transport_medium}"
-        )
+        self.audit_log("NETWORK", "RECEIVE_PEER", msg=msg, details={"payload": msg.payload})
         self._data_buffer[msg.sender_id] = msg.payload
         self.on_peer_data(msg)
 
@@ -377,4 +398,4 @@ class BaseBayDevice(BaseDevice):
     def clear_buffer(self) -> None:
         """清空数据缓冲区"""
         self._data_buffer.clear()
-        self.logger.debug("数据缓冲区已清空")
+        self.audit_log("DATA", "BUFFER_CLEARED", level=logging.DEBUG)

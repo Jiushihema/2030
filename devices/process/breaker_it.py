@@ -3,7 +3,7 @@ devices/process/breaker_it.py
 
 断路器智能终端 —— 过程层汇聚节点
 """
-
+import logging
 import time
 from typing import Any, Dict, Optional
 
@@ -41,7 +41,7 @@ class BreakerIntelligentTerminal(BaseProcessAggregator):
         self._last_cmd_action:    Optional[str]   = None
         # self._cmd_cooldown_until: float = 0.0
 
-        self.logger.info("断路器智能终端初始化完成")
+        self.audit_log("SYSTEM", "STARTUP", level=logging.INFO)
 
     # ════════════════════════════════════════════
     #  只读属性
@@ -70,9 +70,10 @@ class BreakerIntelligentTerminal(BaseProcessAggregator):
         trigger = (msg.payload.get("report_trigger", "periodic")
                 if isinstance(msg.payload, dict) else "periodic")
         if trigger == "event":
-            self.logger.info(
-                f"检测到断路器变位事件: state={self._breaker_state}, 立即透传至间隔层"
-            )
+            self.audit_log("DATA", "BREAKER_STATE_CHANGE_EVENT", msg=msg, details={
+                "current_state": self._breaker_state,
+                "action": "immediate_forward"
+            }, level=logging.INFO)
             self.forward_event(msg, MsgType.STATUS)
 
 
@@ -111,7 +112,7 @@ class BreakerIntelligentTerminal(BaseProcessAggregator):
         elif action in ("open", "trip"):
             return self._execute_open(now)
         else:
-            self.logger.warning(f"未知指令: {action}")
+            self.audit_log("SECURITY", "UNKNOWN_COMMAND", details={"action": action}, level=logging.CRITICAL)
             return {"success": False, "error": f"未知指令: {action}", "device_id": self.device_id}
 
     def _execute_close(self, timestamp: float) -> Dict[str, Any]:
@@ -126,7 +127,7 @@ class BreakerIntelligentTerminal(BaseProcessAggregator):
         self._last_cmd_time      = timestamp
         self._cmd_cooldown_until = timestamp + self.CMD_COOLDOWN
         self._notify_sensor_position("closed", timestamp)
-        self.logger.warning("执行合闸指令完成")
+        self.audit_log("CONTROL", "CLOSE_EXECUTED", details={"exec_time": timestamp}, level=logging.INFO)
         return {
             "success": True, "action": "close", "state": "closed",
             "device_id": self.device_id, "exec_time": timestamp,
@@ -139,6 +140,7 @@ class BreakerIntelligentTerminal(BaseProcessAggregator):
         线路持续带故障运行。
         """
         if self._breaker_state == "open":
+            self.audit_log("CONTROL", "OPEN_REJECTED", details={"reason": "already_open"}, level=logging.WARNING)
             return {
                 "success": False, "error": "断路器已处于分闸状态",
                 "device_id": self.device_id, "state": self._breaker_state,
@@ -150,10 +152,13 @@ class BreakerIntelligentTerminal(BaseProcessAggregator):
 
         if sensor_position == "open":
             # 传感器显示已分闸（可能被篡改），拒绝执行，线路持续带故障
-            self.logger.warning(
-                f"传感器显示已处于分闸位置，拒绝执行分闸指令 "
-                f"（传感器可能被篡改！线路持续带故障！）"
-            )
+            self.audit_log("SECURITY", "SENSOR_CONFLICT_DETECTED", details={
+                "expected_state": self._breaker_state,
+                "sensor_state": sensor_position,
+                "impact": "trip_command_rejected_line_faulty",
+                "reason": "Sensor data indicates breaker is already open, possible tampering"
+            }, level=logging.CRITICAL)
+
             return {
                 "success":   False,
                 "error":     "传感器显示断路器已处于分闸状态，拒绝执行",
@@ -166,7 +171,7 @@ class BreakerIntelligentTerminal(BaseProcessAggregator):
         self._last_cmd_time      = timestamp
         self._cmd_cooldown_until = timestamp + self.CMD_COOLDOWN
         self._notify_sensor_position("open", timestamp)
-        self.logger.warning("执行分闸指令完成")
+        self.audit_log("CONTROL", "OPEN_EXECUTED", details={"exec_time": timestamp}, level=logging.INFO)
         return {
             "success": True, "action": "open", "state": "open",
             "device_id": self.device_id, "exec_time": timestamp,
@@ -189,7 +194,7 @@ class BreakerIntelligentTerminal(BaseProcessAggregator):
                 timestamp=timestamp,
             )
             self.send(cmd_msg)
-            self.logger.debug(f"位置变更通知已发送: [{sensor_id}] → {position}")
+            self.audit_log("CONTROL", "NOTIFY_SENSOR", details={"sensor": sensor_id, "position": position}, level=logging.DEBUG)
 
     # ════════════════════════════════════════════
     #  指令来源校验
@@ -205,9 +210,13 @@ class BreakerIntelligentTerminal(BaseProcessAggregator):
 
         time_diff = local_time - cmd_time
         if abs(time_diff) > 1.5:
-            self.logger.critical(
-                f"【安全拦截】拒绝执行控制指令！报文时间与本地时钟偏差过大 ({time_diff:.2f}秒)。"
-            )
+            self.audit_log("SECURITY", "REPLAY_OR_DELAY_ATTACK_DETECTED", msg=msg, details={
+                "local_time": local_time,
+                "cmd_time": cmd_time,
+                "time_diff": time_diff,
+                "threshold": 1.5,
+                "action": "Command Rejected"
+            }, level=logging.CRITICAL)
             # 拒绝接收该指令，后续的 execute_command 将不会被调用
             return False
 

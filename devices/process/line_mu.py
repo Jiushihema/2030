@@ -18,7 +18,7 @@ devices/process/line_mu.py
     3. 接收 PTP 时间同步
     4. 支持攻击注入（inject_frame 单帧覆盖；set_continuous_inject 持续覆盖）
 """
-
+import logging
 import random
 import time
 import threading
@@ -95,12 +95,12 @@ class LineMergingUnit(BaseProcessAggregator):
         # ── 供主循环摘要读取的最近一帧缓存 ──
         self.last_sample: Optional[Dict[str, float]] = None
 
-        self.logger.info(
-            f"线路合并单元: svID={self._sv_id}, "
-            f"帧率={1.0 / self.report_interval:.0f}Hz, "
-            f"额定电压={self._nominal_voltage}kV, "
-            f"额定电流={self._nominal_current}A"
-        )
+        self.audit_log("SYSTEM", "STARTUP", details={
+            "sv_id": self._sv_id,
+            "sample_rate_hz": int(1.0 / self.report_interval) if self.report_interval > 0 else 0,
+            "nominal_voltage": self._nominal_voltage,
+            "nominal_current": self._nominal_current
+        }, level=logging.INFO)
 
     # ════════════════════════════════════════════
     #  只读属性
@@ -127,7 +127,7 @@ class LineMergingUnit(BaseProcessAggregator):
         stop_event : threading.Event  可选，留作扩展用（line_mu 持续运行不会自动退出）
         """
         if self._running:
-            self.logger.warning("采样线程已在运行，忽略重复启动")
+            self.audit_log("SYSTEM", "THREAD_START_IGNORED", details={"reason": "Already running"}, level=logging.WARNING)
             return
         self._stop_event = stop_event
         self._running = True
@@ -137,7 +137,7 @@ class LineMergingUnit(BaseProcessAggregator):
             daemon=True,
         )
         self._thread.start()
-        self.logger.info(f"采样线程启动，间隔={self.report_interval}s")
+        self.audit_log("SYSTEM", "SAMPLING_THREAD_STARTED", details={"interval": self.report_interval}, level=logging.INFO)
 
     def stop(self) -> None:
         """停止自驱动采样线程。"""
@@ -146,7 +146,7 @@ class LineMergingUnit(BaseProcessAggregator):
         self._running = False
         if self._thread is not None:
             self._thread.join(timeout=2)
-        self.logger.info("采样线程已停止")
+        self.audit_log("SYSTEM", "SAMPLING_THREAD_STOPPED", level=logging.INFO)
 
     def _loop(self) -> None:
         """线程主体：持续按 report_interval 周期采样上报。"""
@@ -170,28 +170,40 @@ class LineMergingUnit(BaseProcessAggregator):
         override : dict  如 {"voltage": 25.0, "current": 200.0}
         """
         self._injected_frame = override
-        self.logger.warning(f"注入异常帧: {override}")
+        self.audit_log("ATTACK", "FDI_SINGLE_FRAME_INJECTED", details={
+            "override_data": override,
+            "impact": "Data will be manipulated in the next sampling cycle"
+        }, level=logging.DEBUG)
 
     def set_continuous_inject(self, override: dict) -> None:
         """持续按 override 上报 SV（带微小抖动，模拟异常波形）。"""
         self._continuous_inject = dict(override)
-        self.logger.warning(f"已开启持续异常注入: {self._continuous_inject}")
+        self.audit_log("ATTACK", "FDI_CONTINUOUS_INJECT_STARTED", details={
+            "override_data": self._continuous_inject
+        }, level=logging.DEBUG)
 
     def clear_continuous_inject(self) -> None:
         """关闭持续注入，恢复常规额定值附近波动。"""
         if self._continuous_inject is not None:
             self._continuous_inject = None
-            self.logger.warning("已关闭持续异常注入，恢复常规电网波动采样")
+            self.audit_log("ATTACK", "FDI_CONTINUOUS_INJECT_STOPPED", details={
+                "action": "Restoring normal grid sampling"
+            }, level=logging.DEBUG)
 
     def set_continuous_override(self, override: dict) -> None:
         """持续 override 上报 SV（带微小抖动，模拟异常波形）。"""
         self._continuous_override = dict(override)
-        self.logger.warning(f"电网出现过载: {self._continuous_inject}")
+        self.audit_log("ATTACK", "GRID_FAULT_SIMULATION_STARTED", details={
+            "fault_data": self._continuous_override
+        }, level=logging.DEBUG)
 
     def clear_continuous_override(self) -> None:
         """关闭持续注入，恢复常规额定值附近波动。"""
         if self._continuous_override is not None:
             self._continuous_override = None
+        self.audit_log("ATTACK", "GRID_FAULT_SIMULATION_STOPPED", details={
+            "fault_data": self._continuous_override
+        }, level=logging.DEBUG)
 
     # ════════════════════════════════════════════
     #  自采集
@@ -272,7 +284,9 @@ class LineMergingUnit(BaseProcessAggregator):
 
     def handle_sensor_data(self, msg: Message) -> None:
         """线路合并单元没有下属传感器，收到意外数据仅缓存。"""
-        self.logger.debug(f"收到意外传感器数据: from={msg.sender_id}")
+        self.audit_log("SECURITY", "UNEXPECTED_SENSOR_DATA", msg=msg, details={
+            "reason": "Line MU has no downstream sensors, possible topology spoofing"
+        }, level=logging.WARNING)
         if isinstance(msg.payload, dict):
             self.update_cache(msg.sender_id, msg.payload)
 
@@ -307,7 +321,11 @@ class LineMergingUnit(BaseProcessAggregator):
 
     def execute_command(self, cmd_payload: Dict[str, Any]) -> Dict[str, Any]:
         """线路合并单元不支持控制指令。"""
-        self.logger.warning(f"线路合并单元不支持控制指令: {cmd_payload}")
+        self.audit_log("SECURITY", "UNAUTHORIZED_COMMAND_TO_MU", details={
+            "payload": cmd_payload,
+            "reason": "Merging Unit does not support control commands"
+        }, level=logging.WARNING)
+
         return {
             "success":   False,
             "error":     "线路合并单元不支持控制指令",
