@@ -49,7 +49,7 @@ const ATTACK_PROFILES = {
     backendMode: 'coarse-bridge',
     backendBadge: '粗粒度桥接',
     backendTone: 'bridge',
-    backendLabel: '后端能力：已接入时序攻击，断路器授时被欺骗，将拒绝执行命令。',
+    backendLabel: '后端能力：已接入时序攻击，断路器授时被欺骗。',
     executionLabel: '执行方式：全局时序偏移演示',
   },
   swarm: {
