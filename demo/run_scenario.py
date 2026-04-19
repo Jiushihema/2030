@@ -237,7 +237,7 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
     elif cmd in ("3-1", "3-1-on", "3-1-off"):
         turn_on = (cmd == "3-1-on") or (cmd == "3-1" and not ctx.is_3_1)
         turn_off = (cmd == "3-1-off") or (cmd == "3-1" and ctx.is_3_1)
-        if not turn_on:
+        if turn_on:
             topo.remove_link("line_monitor", "monitor_host")
             logger.warning("通信干扰成功。【间隔层-站控层】通信链路已在物理层瘫痪")
             ctx.is_3_1 = True
@@ -249,7 +249,7 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
     elif cmd in ("3-2", "3-2-on", "3-2-off"):
         turn_on = (cmd == "3-2-on") or (cmd == "3-2" and not ctx.is_3_2)
         turn_off = (cmd == "3-2-off") or (cmd == "3-2" and ctx.is_3_2)
-        if not turn_on:
+        if turn_on:
             topo.remove_link("line_monitor", "breaker_it")
             logger.warning("通信干扰成功。【断路器-间隔层】通信链路已在物理层瘫痪")
             ctx.is_3_2 = True
@@ -261,7 +261,7 @@ def _dispatch(cmd: str, ctx: SimContext) -> None:
     elif cmd in ("4", "4-on", "4-off"):
         turn_on = (cmd == "4-on") or (cmd == "4" and not ctx.is_4)
         turn_off = (cmd == "4-off") or (cmd == "4" and ctx.is_4)
-        if not turn_on:
+        if turn_on:
             topo.remove_link("time_sync", "breaker_it")
             topo.add_link("fake_time_sync", "breaker_it")
             ctx.is_time_spoofing = True
