@@ -128,8 +128,8 @@ export const ATTACKS = {
       { id: 'gatewayB', label: '监控主站 monitor_host', focusNodeId: 'monitor_host' },
     ],
     commands: {
-      attack: null,
-      defend: null,
+      attack: '3-1-on',
+      defend: '3-1-off',
     },
     durations: {
       steps: 4,
@@ -181,8 +181,8 @@ export const ATTACKS = {
     targetMode: 'auto',
     autoTargetLabel: '时间同步系统及关联节点',
     commands: {
-      attack: null,
-      defend: null,
+      attack: '4-on',
+      defend: '4-off',
     },
     durations: {
       steps: 4,
