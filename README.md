@@ -1,113 +1,59 @@
-# 电站全链路通信与攻防仿真
+# 2030 电力攻防演示项目
 
-一个面向电力场景的轻量级仿真项目，用于演示**过程层-间隔层-站控层**的设备通信、拓扑联动以及攻击注入效果。  
-项目通过统一消息总线与拓扑注册表组织设备行为，并提供独立控制台进行实时攻击/操作指令注入。
+这个仓库包含一个电力场景仿真后端，以及一套新的前端演示界面。
 
-## 项目特性
+## 目录
 
-- 三层架构建模：过程层、间隔层、站控层
-- 统一报文模型：消息类型、应用协议、传输介质可追踪
-- 拓扑可运行时变更：支持链路断开/恢复、授时路径切换
-- 攻击注入控制台：实时触发攻击并观察设备状态变化
-- 仿真日志输出：终端摘要 + `logs/devices.log` 文件落盘
+- `demo/`
+  - 场景启动与攻击控制入口。
+- `devices/`
+  - 设备侧仿真逻辑。
+- `common/`
+  - 总线、拓扑和通用消息定义。
+- `config/`
+  - 配置文件。
+- `web/drone-security-next/`
+  - 当前使用中的新前端。
+- `docs/`
+  - 项目文档与表格资料。
 
-## 目录结构
+## 前端现状
 
-```text
-2030/
-├─ base/                   # 设备基类
-├─ common/                 # 消息、总线、拓扑核心
-├─ config/                 # 拓扑配置
-├─ demo/                   # 演示入口（主仿真 + 攻击控制台）
-├─ devices/                # 各层设备实现
-└─ logs/                   # 运行后自动生成
-```
+旧前端已移除，当前前端为：
 
-## 运行环境
+- [web/drone-security-next](C:/Users/hema/Desktop/2030/web/drone-security-next)
 
-- Python 3.8 及以上
-- Windows / Linux / macOS 均可（项目主要使用 Python 标准库）
+新前端的特点：
 
-> 本项目当前未提供 `requirements.txt`，默认无需安装第三方依赖。
+- 攻击定义集中在 `src/domain/attacks.js`
+- 攻击语义集中在 `src/domain/attackProfiles.js`
+- 拓扑传播集中在 `src/domain/topology.js`
+- 运行态调度集中在 `src/composables/useControlTower.js`
 
-## 快速开始
+## 启动方式
 
-在项目根目录打开两个终端。
+先启动后端：
 
-### 1) 启动主仿真进程
-
-```bash
+```powershell
 python demo/run_scenario.py
 ```
 
-主进程会：
+再启动前端：
 
-- 初始化拓扑与设备
-- 每秒广播授时并输出运行摘要
-- 在 `localhost:9999` 启动指令监听服务
-
-### 2) 启动攻击注入控制台
-
-```bash
-python demo/attack_console.py
+```powershell
+cd web/drone-security-next
+npm run dev
 ```
 
-连接成功后，可在控制台输入指令进行攻击注入或人工操作。
+## 构建验证
 
-## 控制台指令说明
+```powershell
+cd web/drone-security-next
+npm run build
+```
 
-| 指令 | 作用 |
-|---|---|
-| `1-1` | 持续过压帧注入（合闸时生效） |
-| `1-2` | 篡改机械传感器位置为 `open`（`trip` 可能被拒） |
-| `3-1` | 通信干扰：间隔层 ↔ 站控层链路 |
-| `3-2` | 通信干扰：断路器 ↔ 间隔层链路 |
-| `4` | 授时欺骗（将 `breaker_it` 授时改为伪授时源） |
-| `5` | 伪造 GOOSE 合闸 + 闭锁过压跳闸/自动重合闸 |
-| `o` | 触发电网过载异常 |
-| `m-1` | 人工合闸 |
-| `m-2` | 人工分闸 |
-| `s` | 查看当前状态摘要 |
-| `r` | 重置所有状态并恢复默认链路 |
-| `q` | 退出仿真 |
+## 扩展文档
 
-## 关键模块说明
+详细前端扩展说明见：
 
-- `demo/run_scenario.py`：主仿真入口，负责设备初始化、主循环、Socket 指令服务
-- `demo/attack_console.py`：攻击控制台入口，连接主进程并发送指令
-- `config/topology_config.py`：全站设备与链路的声明式配置
-- `common/bus.py`：消息分发中枢（可扩展攻击注入点）
-- `common/topology.py`：拓扑注册与邻居查询、链路动态调整
-- `common/message.py`：统一报文模型（消息类型/协议/介质）
-
-## 日志与观测
-
-- 终端会打印实时状态（电压、电流、断路器状态等）
-- 详细日志输出到：`logs/devices.log`
-
-可基于日志观察：
-
-- 指令触发前后的状态变化
-- 链路断开导致的消息投递失败现象
-- 授时欺骗与伪造控制指令的影响
-
-## 常见问题
-
-### 控制台连接失败
-
-请先启动 `demo/run_scenario.py`，并确认端口 `9999` 未被占用。
-
-### 想修改拓扑结构
-
-直接编辑 `config/topology_config.py` 中的 `devices` 与 `links`，无需修改设备代码。
-
-### 仿真进入暂停状态
-
-在攻击控制台输入 `r` 可重置状态并继续运行。
-
-## 后续扩展建议
-
-- 增加 `requirements.txt` 与统一环境管理
-- 添加自动化测试（消息路由、拓扑变更、攻击场景回归）
-- 增加更多攻击/防御策略并沉淀标准场景脚本
-
+- [FRONTEND_EXTENSION_GUIDE.md](C:/Users/hema/Desktop/2030/web/drone-security-next/FRONTEND_EXTENSION_GUIDE.md)
