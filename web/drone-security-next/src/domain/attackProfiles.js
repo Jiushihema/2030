@@ -27,11 +27,11 @@ const ATTACK_PROFILES = {
   },
   control: {
     selectionLabel: '影响焦点',
-    targetHint: '后端当前使用统一控制注入通道，选择项决定前端聚焦的设备与传播路径。',
+    targetHint: '后端当前仅支持针对线路监测主机 line_monitor 的恶意控制注入，前端会聚焦该控制链路的传播与反馈。',
     backendMode: 'coarse-bridge',
     backendBadge: '粗粒度桥接',
     backendTone: 'bridge',
-    backendLabel: '后端能力：控制注入桥已接入，但目标粒度仍是通道级。',
+    backendLabel: '后端能力：已接入针对 line_monitor 的恶意控制。',
     executionLabel: '执行方式：三段式控制传播演示',
   },
   alarm: {

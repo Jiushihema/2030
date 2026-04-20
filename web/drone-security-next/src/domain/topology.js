@@ -59,25 +59,10 @@ export const ATTACK_TIMELINES = {
     ],
   },
   control: {
-    deviceA1: [
-      { nodes: ['line_monitor'], edges: [], summary: '控制链路从线路监测主机开始被劫持。', consequences: ['控制视图开始偏离真实设备状态。'] },
-      { nodes: ['line_monitor', 'breaker_it', 'line_mu'], edges: ['e_lm_bit', 'e_lmu_lm'], summary: '恶意控制下发到关键设备。', consequences: ['断路器与线路测量单元进入异常联动风险。'] },
-      { nodes: ['line_monitor', 'breaker_it', 'line_mu'], edges: ['e_lm_bit', 'e_lmu_lm', 'e_bit_lm'], summary: '状态回传被污染，形成闭环误导。', consequences: ['主站对现场状态的判断进一步失真。'] },
-    ],
-    deviceA2: [
-      { nodes: ['line_monitor'], edges: [], summary: '线路测量单元关联链路被锁定。', consequences: ['测量与控制之间的边界开始模糊。'] },
-      { nodes: ['line_monitor', 'line_mu', 'breaker_it'], edges: ['e_lmu_lm', 'e_lm_bit'], summary: 'line_mu 与 breaker_it 同时被波及。', consequences: ['控制误导扩散到关键设备。'] },
-      { nodes: ['line_monitor', 'line_mu', 'breaker_it'], edges: ['e_lmu_lm', 'e_lm_bit', 'e_bit_lm'], summary: '控制回路形成异常闭环。', consequences: ['现场动作与上位监控都受到影响。'] },
-    ],
     deviceB1: [
-      { nodes: ['monitor_host'], edges: [], summary: '主站控制意图被恶意劫持。', consequences: ['站端控制开始偏离真实操作意图。'] },
-      { nodes: ['monitor_host', 'line_monitor', 'data_server'], edges: ['e_mh_lm', 'e_mh_ds'], summary: '主站到站端链路同时受扰。', consequences: ['数据和控制通道一起受到牵连。'] },
-      { nodes: ['monitor_host', 'line_monitor', 'data_server'], edges: ['e_mh_lm', 'e_mh_ds', 'e_lm_mh'], summary: '上行回传被污染。', consequences: ['主站看到的是被回写过的状态。'] },
-    ],
-    deviceB2: [
-      { nodes: ['operator_station'], edges: [], summary: '操作员侧入口被劫持。', consequences: ['人工操作指令的可信度下降。'] },
-      { nodes: ['operator_station', 'monitor_host', 'data_server'], edges: ['e_os_mh', 'e_mh_ds'], summary: '站控路径向主站扩散。', consequences: ['主站与数据服务器同时进入风险域。'] },
-      { nodes: ['operator_station', 'monitor_host', 'data_server'], edges: ['e_os_mh', 'e_mh_ds', 'e_lm_mh'], summary: '异常影响回流到监测平面。', consequences: ['控制面与观测面同步失真。'] },
+      { nodes: ['line_monitor'], edges: [], summary: '线路监测主机被劫持并开始伪造控制。', consequences: ['line_monitor 的控制视图开始偏离真实现场状态。'] },
+      { nodes: ['line_monitor', 'breaker_it'], edges: ['e_lm_bit'], summary: '恶意开闸指令从 line_monitor 下发到 breaker_it。', consequences: ['断路器维持在异常动作链路中，线路难以恢复正常。'] },
+      { nodes: ['line_monitor', 'breaker_it'], edges: ['e_lm_bit', 'e_bit_lm'], summary: '异常状态由 breaker_it 回传，形成持续误导。', consequences: ['line_monitor 持续接收异常反馈，电路保持异常状态。'] },
     ],
   },
   alarm: {

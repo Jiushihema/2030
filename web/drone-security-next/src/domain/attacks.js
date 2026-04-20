@@ -62,13 +62,10 @@ export const ATTACKS = {
     id: 'control',
     label: '恶意控制',
     icon: 'C',
-    description: '伪造控制报文影响 breaker_it 与 line_monitor 的动作逻辑，制造异常跳闸或控制偏转。',
+    description: '针对线路监测主机 line_monitor 注入恶意控制，伪造开闸指令，让原本陷入异常的电路持续保持异常状态。',
     targetMode: 'manual',
     targets: [
-      { id: 'deviceA1', label: '断路器间隔 breaker_it', focusNodeId: 'breaker_it' },
-      { id: 'deviceA2', label: '线路测量单元 line_mu', focusNodeId: 'line_mu' },
       { id: 'deviceB1', label: '线路监测主机 line_monitor', focusNodeId: 'line_monitor' },
-      { id: 'deviceB2', label: '监控主站 monitor_host', focusNodeId: 'monitor_host' },
     ],
     commands: {
       attack: '5-on',
@@ -96,15 +93,15 @@ export const ATTACKS = {
       standby: {
         title: '恶意控制攻击链路',
         items: [
-          '攻击目标覆盖断路器间隔、线路测量单元、监测主机等控制路径关键点。',
-          '页面会按阶段展示控制侵入、动作扩散与恢复过程。',
+          '当前后端仅支持针对线路监测主机 line_monitor 的恶意控制注入。',
+          '页面会围绕 line_monitor 下发开闸指令这条链路展示侵入、扩散与恢复过程。',
         ],
       },
       attacking: {
         title: '恶意控制进行中',
         items: [
-          '攻击者通过伪造控制命令影响下行链路。',
-          '拓扑图将突出控制传播路径和被影响设备。',
+          '攻击者通过 line_monitor 伪造开闸指令，持续影响下行控制链路。',
+          '拓扑图将突出 line_monitor 到 breaker_it 的控制传播路径以及异常回传。',
           '评估面板会同步刷新攻击成功率和防守缺口。',
         ],
       },
