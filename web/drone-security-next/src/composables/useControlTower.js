@@ -266,6 +266,21 @@ export function useControlTower() {
   async function activateScenario(mode) {
     clearAttackTimer()
 
+    if (mode === 'continuous-overvoltage') {
+      const breakerState = String(telemetry.value?.breakerState || '').toLowerCase()
+      if (breakerState !== 'closed') {
+        await sendCommandSafe('m-1')
+      }
+      const ok = await sendCommandSafe('1-1-on')
+      if (ok) {
+        backendAttackState.overloadInjected = true
+        statusMessage.value = '持续注入过压帧已开启，仅在合闸状态下持续生效。'
+      } else {
+        statusMessage.value = '持续注入过压帧下发失败，请检查后端仿真状态。'
+      }
+      return
+    }
+
     if (mode === 'overload') {
       const breakerState = String(telemetry.value?.breakerState || '').toLowerCase()
       if (breakerState === 'open') {

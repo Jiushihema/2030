@@ -19,10 +19,6 @@
       <div ref="miniTrendRef" class="mini-chart"></div>
     </div>
 
-    <div class="legend-row">
-      <span v-for="item in TOPOLOGY_LEGEND" :key="item">{{ item }}</span>
-    </div>
-
     <div v-if="activeConsequences.length" class="impact-strip">
       <span class="impact-title">当前影响</span>
       <span v-for="item in activeConsequences" :key="item" class="impact-item">{{ item }}</span>
@@ -48,7 +44,6 @@ import {
   NODE_ICON_MAP,
   NODE_SIZE_MAP,
   TOPOLOGY_EDGES,
-  TOPOLOGY_LEGEND,
   TOPOLOGY_NODES,
   validateTopology,
 } from '../../domain/topology'
@@ -90,6 +85,8 @@ defineEmits(['restore'])
 const chartRef = ref(null)
 const miniTrendRef = ref(null)
 const isExploded = computed(() => props.telemetry?.plantState === 'exploded')
+const graphZoom = ref(0.88)
+const graphCenter = ref(['50%', '48%'])
 
 const activeConsequences = ref([])
 const nodeTags = reactive({})
@@ -103,6 +100,7 @@ const stats = reactive({
 let chart = null
 let miniTrendChart = null
 let resizeHandler = null
+let graphRoamHandler = null
 let stepTimer = null
 let attackedNodes = []
 let activeEdgeIds = []
@@ -305,8 +303,8 @@ function buildTopologyOption() {
         type: 'graph',
         layout: 'none',
         roam: true,
-        zoom: 0.88,
-        center: ['50%', '48%'],
+        zoom: graphZoom.value,
+        center: graphCenter.value,
         edgeSymbol: ['none', 'arrow'],
         edgeSymbolSize: 8,
         data: nodes,
@@ -314,6 +312,20 @@ function buildTopologyOption() {
         emphasis: { disabled: true },
       },
     ],
+  }
+}
+
+function syncGraphViewport() {
+  if (!chart) return
+  const series = chart.getOption()?.series?.[0]
+  if (!series) return
+
+  if (typeof series.zoom === 'number') {
+    graphZoom.value = series.zoom
+  }
+
+  if (Array.isArray(series.center) && series.center.length === 2) {
+    graphCenter.value = [...series.center]
   }
 }
 
@@ -430,6 +442,10 @@ onMounted(() => {
 
   chart = echarts.init(chartRef.value)
   miniTrendChart = echarts.init(miniTrendRef.value)
+  graphRoamHandler = () => {
+    syncGraphViewport()
+  }
+  chart.on('graphRoam', graphRoamHandler)
 
   resizeHandler = () => {
     chart?.resize()
@@ -443,6 +459,9 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopStepTimer()
+  if (chart && graphRoamHandler) {
+    chart.off('graphRoam', graphRoamHandler)
+  }
   chart?.dispose()
   miniTrendChart?.dispose()
   if (resizeHandler) {
@@ -466,7 +485,6 @@ onUnmounted(() => {
 }
 
 .topology-head,
-.legend-row,
 .impact-strip,
 .topology-chart,
 .mini-panel {
@@ -556,7 +574,6 @@ h2 {
   height: calc(100% - 20px);
 }
 
-.legend-row,
 .impact-strip {
   display: flex;
   flex-wrap: wrap;
@@ -568,10 +585,6 @@ h2 {
   background: rgba(2, 10, 18, 0.56);
   color: var(--text-secondary);
   font-size: 12px;
-}
-
-.legend-row {
-  justify-content: center;
 }
 
 .impact-title {
