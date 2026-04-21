@@ -69,11 +69,10 @@
       </button>
       <button
         type="button"
-        class="ghost-btn defend"
-        :disabled="!canDefend"
-        @click="$emit('defend-now')"
+        class="ghost-btn overload"
+        @click="$emit('scenario', 'continuous-overvoltage')"
       >
-        立即防御
+        持续注入过压帧
       </button>
       <button type="button" class="ghost-btn overload" @click="$emit('scenario', 'overload')">
         负荷冲击

@@ -9,7 +9,7 @@ export const ATTACKS = {
     targetMode: 'manual',
     targets: [
       { id: 'sensorA', label: '机械传感器 mechanical_sensor', focusNodeId: 'mechanical_sensor' },
-      { id: 'sensorB', label: '线路测量单元 line_mu', focusNodeId: 'line_mu' },
+      { id: 'sensorB', label: '线路合并单元 line_mu', focusNodeId: 'line_mu' },
     ],
     commands: {
       attack: '1-2-on',
@@ -62,10 +62,10 @@ export const ATTACKS = {
     id: 'control',
     label: '恶意控制',
     icon: 'C',
-    description: '针对线路监测主机 line_monitor 注入恶意控制，伪造开闸指令，让原本陷入异常的电路持续保持异常状态。',
+    description: '攻击者夺取 line_monitor 的控制权后，伪造控制报文向 breaker_it 下发合闸指令，并同时闭锁过压跳闸与自动重合闸相关保护，让异常状态更容易持续。',
     targetMode: 'manual',
     targets: [
-      { id: 'deviceB1', label: '线路监测主机 line_monitor', focusNodeId: 'line_monitor' },
+      { id: 'deviceB1', label: '线路测控 line_monitor', focusNodeId: 'line_monitor' },
     ],
     commands: {
       attack: '5-on',
@@ -93,15 +93,15 @@ export const ATTACKS = {
       standby: {
         title: '恶意控制攻击链路',
         items: [
-          '当前后端仅支持针对线路监测主机 line_monitor 的恶意控制注入。',
-          '页面会围绕 line_monitor 下发开闸指令这条链路展示侵入、扩散与恢复过程。',
+          '攻击者先窃取线路测控 line_monitor 的控制权限，再伪造控制报文直达 breaker_it。',
+          '同时会闭锁过压跳闸与自动重合闸相关保护，使异常状态更容易持续。',
         ],
       },
       attacking: {
         title: '恶意控制进行中',
         items: [
-          '攻击者通过 line_monitor 伪造开闸指令，持续影响下行控制链路。',
-          '拓扑图将突出 line_monitor 到 breaker_it 的控制传播路径以及异常回传。',
+          '攻击者通过被劫持的 line_monitor 向 breaker_it 下发伪造合闸指令。',
+          '拓扑图将突出 line_monitor 到 breaker_it 的控制传播路径，以及保护闭锁后的持续异常。',
           '评估面板会同步刷新攻击成功率和防守缺口。',
         ],
       },
@@ -121,7 +121,7 @@ export const ATTACKS = {
     description: '通过压制关键链路上的告警或异常提示，让运行人员丧失对故障演化的感知。',
     targetMode: 'manual',
     targets: [
-      { id: 'gatewayA', label: '线路监测主机 line_monitor', focusNodeId: 'line_monitor' },
+      { id: 'gatewayA', label: '线路测控 line_monitor', focusNodeId: 'line_monitor' },
       { id: 'gatewayB', label: '监控主站 monitor_host', focusNodeId: 'monitor_host' },
     ],
     commands: {
@@ -179,7 +179,7 @@ export const ATTACKS = {
     // autoTargetLabel: '时间同步系统及关联节点',
     targetMode: 'manual',
     targets: [
-      { id: 'deviceA1', label: '断路器间隔 breaker_it', focusNodeId: 'breaker_it' },
+      { id: 'deviceA1', label: '断路器智能终端 breaker_it', focusNodeId: 'breaker_it' },
     ],
     commands: {
       attack: '4-on',
