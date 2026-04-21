@@ -178,6 +178,12 @@ export function useControlTower() {
       return ok
     }
 
+    if (attack.id === 'alarm') {
+      const targetId = currentTargetId.value || selectedTargetId.value
+      const cmd = attack.commands.attack[targetId]
+      return sendCommandSafe(cmd)
+    }
+
     return sendCommandSafe(attack.commands.attack)
   }
 
@@ -196,6 +202,12 @@ export function useControlTower() {
       const ok = await sendCommandSafe(attack.commands.defend)
       if (ok) backendAttackState.maliciousControl = false
       return ok
+    }
+
+    if (attack.id === 'alarm') {
+      const targetId = currentTargetId.value || selectedTargetId.value
+      const cmd = attack.commands.defend[targetId]
+      return sendCommandSafe(cmd)
     }
 
     return sendCommandSafe(attack.commands.defend)
