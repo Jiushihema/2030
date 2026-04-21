@@ -133,7 +133,7 @@ function buildMiniTrendOption() {
   return {
     animation: false,
     backgroundColor: 'transparent',
-    grid: { top: 12, left: 26, right: 10, bottom: 18 },
+    grid: { top: 12, left: 26, right: 30, bottom: 18 },
     xAxis: {
       type: 'category',
       data: props.history.labels,
@@ -153,7 +153,10 @@ function buildMiniTrendOption() {
         type: 'value',
         min: 0,
         max: 220,
-        axisLabel: { show: false },
+        position: 'right',
+        axisLabel: { color: '#8eb3d1', fontSize: 9, formatter: '{value}A' },
+        axisLine: { show: false },
+        axisTick: { show: false },
         splitLine: { show: false },
       },
     ],
