@@ -54,10 +54,22 @@ COMMON_FORMATTER = logging.Formatter(
     datefmt="%H:%M:%S",
 )
 
+class RealisticDeviceLogFilter(logging.Filter):
+    def filter(self, record):
+        # 1. 过滤掉底层仿真拓扑的日志
+        if record.name == "TopologyRegistry":
+            return False
+        # 2. 过滤掉攻击设备(如 fake_time_sync)的日志
+        if "fake_time_sync" in record.name:
+            return False
+        # 其他真实设备的日志允许放行
+        return True
+
 # 2. 设置 Root Logger (全局汇总 devices.log + 控制台告警)
 _file_handler = logging.FileHandler("logs/devices.log", encoding="utf-8")
 _file_handler.setLevel(logging.INFO)
 _file_handler.setFormatter(COMMON_FORMATTER)
+_file_handler.addFilter(RealisticDeviceLogFilter())
 
 _console_handler = logging.StreamHandler()
 _console_handler.setLevel(logging.WARNING)

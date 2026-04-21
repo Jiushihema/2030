@@ -199,6 +199,21 @@ class BaseProcessAggregator(BaseDevice):
                 "reason": "Command source not verified by logic (bypass detected)",
                 "action": "Command execution blocked"
             }, level=logging.CRITICAL)
+
+            ack_msg = Message(
+                sender_id=self.device_id,
+                receiver_id=msg.sender_id,
+                msg_type=MsgType.ACK,
+                app_protocol=self.app_protocol,
+                transport_medium=self.transport_medium,
+                payload={
+                    "ack_for": msg.msg_id,
+                    "device_id": self.device_id,
+                    "ack_time": self.current_time or time.time(),
+                },
+                timestamp=self.current_time or time.time(),
+            )
+            self.send(ack_msg)
             return
 
         self.audit_log("CONTROL", "COMMAND_RECEIVED", msg=msg, details={

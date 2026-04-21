@@ -12,7 +12,7 @@ import math
 import time
 import threading
 from collections import deque
-from typing import Deque, Optional
+from typing import Deque, Optional, Dict, Any
 
 from base.base_bay_device import BaseBayDevice
 from common.message import Message, MsgType, AppProtocol, TransportMedium
@@ -22,6 +22,8 @@ class LineMonitorDevice(BaseBayDevice):
 
     OVERVOLTAGE_THRESHOLD = 12.0  # kV
     RECLOSE_DELAY         = 3.0   # 秒，方便手动演示
+    COMMAND_TIMEOUT = 2.0  # 指令等待 ACK 的超时时间（秒）
+
     # 累计过压跳闸达到此次数时起闭锁自动重合闸（前几次仍可重合）
     RECLOSE_LOCK_AT_OVERVOLTAGE_TRIP = 5
 
@@ -46,6 +48,36 @@ class LineMonitorDevice(BaseBayDevice):
         self._overvoltage_trip_count:  int   = 0
         # 演示用：闭锁过压判据触发的本地跳闸（不阻止 SV 上送与窗口统计）
         self.suppress_overvoltage_protection: bool = False
+
+        self._pending_commands: Dict[str, Dict[str, Any]] = {}
+
+    # ════════════════════════════════════════════
+    #  闭环控制：指令超时处理
+    # ════════════════════════════════════════════
+
+    def _on_command_timeout(self, msg_id: str, action: str) -> None:
+        """定时器触发：指令超时未收到下游 ACK"""
+        cmd_info = self._pending_commands.pop(msg_id, None)
+        if not cmd_info:
+            return  # 已经被正常 ACK 处理并移除了
+        # 记录本地严重安全日志
+        self.audit_log("SECURITY", "COMMAND_TIMEOUT", details={
+            "action": action,
+            "msg_id": msg_id,
+            "reason": "No ACK received from breaker_it, communication may be down or device is dead!"
+        }, level=logging.CRITICAL)
+        # 向上级主站紧急告警：通信瘫痪
+        self.report_to_station(
+            receiver_id="monitor_host",
+            payload={
+                "event": "communication_lost",
+                "target": "breaker_it",
+                "action": action,
+                "impact": f"Protection {action} command failed to confirm. Grid is in DANGER!"
+            },
+            msg_type=MsgType.ALARM,
+            app_protocol=AppProtocol.MMS,
+        )
 
     # ════════════════════════════════════════════
     #  过程层数据处理
@@ -121,24 +153,48 @@ class LineMonitorDevice(BaseBayDevice):
                 "persist_ticks": self._overvoltage_persistent_ticks
             }, level=logging.WARNING)
 
-            self.command_to_process(
+            trip_msg = Message(
+                sender_id=self.device_id,
                 receiver_id="breaker_it",
-                payload={"action": "trip", "reason": "line_overvoltage"},
                 msg_type=MsgType.CMD,
                 app_protocol=AppProtocol.GOOSE,
                 transport_medium=TransportMedium.RF_LOW_LATENCY,
+                payload={"action": "trip", "reason": "line_overvoltage"},
+                timestamp=self.current_time,
             )
-            self.report_to_station(
-                receiver_id="monitor_host",
-                payload={
-                    "event": "line_trip_executed",
-                    "voltage": voltage,
-                    "window_voltage_stat": window_stat,
-                    "window_size": self.SV_VOLTAGE_WINDOW_SIZE,
-                },
-                msg_type=MsgType.ALARM,
-                app_protocol=AppProtocol.MMS,
-            )
+            # 启动定时器
+            timer = threading.Timer(self.COMMAND_TIMEOUT, self._on_command_timeout, args=[trip_msg.msg_id, "trip"])
+            timer.daemon = True
+            timer.start()
+
+            # 将上下文存入 pending_commands，等待 ACK 时使用
+            self._pending_commands[trip_msg.msg_id] = {
+                "timer": timer,
+                "action": "trip",
+                "voltage": voltage,
+                "window_stat": window_stat
+            }
+
+            self.send(trip_msg)
+
+            # self.command_to_process(
+            #     receiver_id="breaker_it",
+            #     payload={"action": "trip", "reason": "line_overvoltage"},
+            #     msg_type=MsgType.CMD,
+            #     app_protocol=AppProtocol.GOOSE,
+            #     transport_medium=TransportMedium.RF_LOW_LATENCY,
+            # )
+            # self.report_to_station(
+            #     receiver_id="monitor_host",
+            #     payload={
+            #         "event": "line_trip_executed",
+            #         "voltage": voltage,
+            #         "window_voltage_stat": window_stat,
+            #         "window_size": self.SV_VOLTAGE_WINDOW_SIZE,
+            #     },
+            #     msg_type=MsgType.ALARM,
+            #     app_protocol=AppProtocol.MMS,
+            # )
         else:
             normal = (
                 (window_stat is not None and window_stat <= self.OVERVOLTAGE_THRESHOLD)
@@ -160,37 +216,100 @@ class LineMonitorDevice(BaseBayDevice):
 
         # ACK：判断分闸是否成功，成功则启动重合闸
         if msg.msg_type == MsgType.ACK:
+            ack_for = payload.get("ack_for")
+
+            # 收到 ACK，取消对应的超时定时器
+            cmd_info = self._pending_commands.pop(ack_for, None)
+            if cmd_info and "timer" in cmd_info:
+                cmd_info["timer"].cancel()
+
+            # result = payload.get("result", {})
+            # if result.get("success") and result.get("action") == "open":
+            #     # 分闸后线路进入失电态，清空过压滑窗，避免历史高压残留导致重合闸误判失败
+            #     self._voltage_window.clear()
+            #     self._overvoltage_persistent_ticks = 0
+            #     self._last_window_stat = None
+            #     if not self._auto_reclose_enabled:
+            #         self.audit_log("CONTROL", "RECLOSE_DISABLED", details={
+            #             "reason": "lockout_threshold_reached"
+            #         }, level=logging.WARNING)
+            #     else:
+            #         self.audit_log("CONTROL", "BREAKER_TRIP_SUCCESS", msg=msg, details={
+            #             "action": "open",
+            #             "next_step": "schedule_reclose"
+            #         }, level=logging.INFO)
+            #         self._reclose_armed = True
+            #         self._schedule_reclose()
+            # elif not result.get("success"):
+            #     # 分闸失败（可能传感器被篡改导致拒绝执行）
+            #     self.audit_log("SECURITY", "BREAKER_TRIP_REJECTED", msg=msg, details={
+            #         "error": result.get("error"),
+            #         "breaker_state": result.get("state"),
+            #         "impact": "line_remains_faulty"
+            #     }, level=logging.CRITICAL)
+            #
+            #     self.report_to_station(
+            #         receiver_id="monitor_host",
+            #         payload={
+            #             "event":  "trip_rejected",
+            #             "reason": result.get("error"),
+            #             "state":  result.get("state"),
+            #         },
+            #         msg_type=MsgType.ALARM,
+            #         app_protocol=AppProtocol.MMS,
+            #     )
             result = payload.get("result", {})
-            if result.get("success") and result.get("action") == "open":
-                # 分闸后线路进入失电态，清空过压滑窗，避免历史高压残留导致重合闸误判失败
-                self._voltage_window.clear()
-                self._overvoltage_persistent_ticks = 0
-                self._last_window_stat = None
-                if not self._auto_reclose_enabled:
-                    self.audit_log("CONTROL", "RECLOSE_DISABLED", details={
-                        "reason": "lockout_threshold_reached"
-                    }, level=logging.WARNING)
-                else:
+            action = result.get("action") or (cmd_info.get("action") if cmd_info else "unknown")
+
+            if result.get("success"):
+                if action in ("open", "trip"):
                     self.audit_log("CONTROL", "BREAKER_TRIP_SUCCESS", msg=msg, details={
                         "action": "open",
                         "next_step": "schedule_reclose"
                     }, level=logging.INFO)
-                    self._reclose_armed = True
-                    self._schedule_reclose()
+
+                    # 确认跳闸成功后，才向站控层上报！
+                    v_report = cmd_info.get("voltage", self._last_voltage) if cmd_info else self._last_voltage
+                    w_report = cmd_info.get("window_stat",
+                                            self._last_window_stat) if cmd_info else self._last_window_stat
+
+                    self.report_to_station(
+                        receiver_id="monitor_host",
+                        payload={
+                            "event": "line_trip_executed",
+                            "voltage": v_report,
+                            "window_voltage_stat": w_report,
+                            "window_size": self.SV_VOLTAGE_WINDOW_SIZE,
+                        },
+                        msg_type=MsgType.ALARM,
+                        app_protocol=AppProtocol.MMS,
+                    )
+                    # 启动重合闸
+                    self._voltage_window.clear()
+                    self._overvoltage_persistent_ticks = 0
+                    self._last_window_stat = None
+                    if not self._auto_reclose_enabled:
+                        self.audit_log("CONTROL", "RECLOSE_DISABLED", details={"reason": "lockout"},
+                                       level=logging.WARNING)
+                    else:
+                        self._reclose_armed = True
+                        self._schedule_reclose()
+                elif action == "close":
+                    self.audit_log("CONTROL", "BREAKER_CLOSE_SUCCESS", msg=msg, level=logging.INFO)
             elif not result.get("success"):
-                # 分闸失败（可能传感器被篡改导致拒绝执行）
-                self.audit_log("SECURITY", "BREAKER_TRIP_REJECTED", msg=msg, details={
+                # 分闸/合闸失败（如传感器被篡改导致拒绝执行）
+                self.audit_log("SECURITY", f"BREAKER_CMD_REJECTED", msg=msg, details={
+                    "action": action,
                     "error": result.get("error"),
                     "breaker_state": result.get("state"),
-                    "impact": "line_remains_faulty"
+                    "impact": "line_remains_faulty" if action in ("open", "trip") else "reclose_failed"
                 }, level=logging.CRITICAL)
-
                 self.report_to_station(
                     receiver_id="monitor_host",
                     payload={
-                        "event":  "trip_rejected",
+                        "event": f"{action}_rejected",
                         "reason": result.get("error"),
-                        "state":  result.get("state"),
+                        "state": result.get("state"),
                     },
                     msg_type=MsgType.ALARM,
                     app_protocol=AppProtocol.MMS,
@@ -261,7 +380,7 @@ class LineMonitorDevice(BaseBayDevice):
     def _send_close_command(self) -> None:
         for target_id in self.downstream_ids:
             if "breaker" in target_id:
-                msg = Message(
+                close_msg = Message(
                     sender_id=self.device_id,
                     receiver_id=target_id,
                     msg_type=MsgType.CMD,
@@ -270,10 +389,20 @@ class LineMonitorDevice(BaseBayDevice):
                     payload={"action": "close", "reason": "auto_reclose"},
                     timestamp=self.current_time or time.time(),
                 )
-                self.send(msg)
+                timer = threading.Timer(self.COMMAND_TIMEOUT, self._on_command_timeout,
+                                        args=[close_msg.msg_id, "close"])
+                timer.daemon = True
+                timer.start()
 
-                self.audit_log("CONTROL", "RECLOSE_EXECUTE", details={
-                    "target": target_id
+                self._pending_commands[close_msg.msg_id] = {
+                    "timer": timer,
+                    "action": "close"
+                }
+
+                self.send(close_msg)
+                self.audit_log("CONTROL", "RECLOSE_EXECUTE_SENT", details={
+                    "target": target_id,
+                    "msg_id": close_msg.msg_id
                 }, level=logging.INFO)
 
     # ════════════════════════════════════════════
@@ -282,15 +411,28 @@ class LineMonitorDevice(BaseBayDevice):
 
     def on_station_command(self, msg: Message) -> None:
         if msg.sender_id == "monitor_host" and msg.msg_type == MsgType.CMD:
+            action = msg.payload.get("action", "unknown")
             self.audit_log("CONTROL", "FORWARD_MANUAL_CMD", msg=msg, details={
                 "target": "breaker_it",
                 "payload": msg.payload
             }, level=logging.INFO)
 
-            self.command_to_process(
+            fwd_msg = Message(
+                sender_id=self.device_id,
                 receiver_id="breaker_it",
-                payload=msg.payload,
                 msg_type=MsgType.CMD,
                 app_protocol=AppProtocol.GOOSE,
                 transport_medium=TransportMedium.RF_LOW_LATENCY,
+                payload=msg.payload,
+                timestamp=self.current_time or time.time(),
             )
+            timer = threading.Timer(self.COMMAND_TIMEOUT, self._on_command_timeout, args=[fwd_msg.msg_id, action])
+            timer.daemon = True
+            timer.start()
+
+            self._pending_commands[fwd_msg.msg_id] = {
+                "timer": timer,
+                "action": action
+            }
+
+            self.send(fwd_msg)
