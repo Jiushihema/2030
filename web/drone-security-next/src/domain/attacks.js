@@ -125,8 +125,14 @@ export const ATTACKS = {
       { id: 'gatewayB', label: '监控主站 monitor_host', focusNodeId: 'monitor_host' },
     ],
     commands: {
-      attack: '3-2-on',
-      defend: '3-2-off',
+      attack: {
+        gatewayA: '3-2-on',
+        gatewayB: '3-1-on',
+      },
+      defend: {
+        gatewayA: '3-2-off',
+        gatewayB: '3-1-off',
+      },
     },
     durations: {
       steps: 4,
